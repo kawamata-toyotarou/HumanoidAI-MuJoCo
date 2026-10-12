@@ -1800,3 +1800,133 @@ outputs\phase35_action_smoothness\phase35_slip_vs_action_delta.svg
 | AとSmoothを両方新規学習 x 3seed | 約20〜28分 + 評価2〜4分 |
 
 次に進むなら、まずSmooth設定を`4242`, `5252`, `6262`の3seedで100,000 stepずつ学習し、既存Aの3seedと同じ評価指標で比較するのが最小の検証になります。
+
+## フェーズ3.6: action滑らかさペナルティーの3seed対照比較
+
+フェーズ3.6では、Stage 1 A設定と、action差分ペナルティーを加えたSmooth設定を、同じ3つの学習seedで比較しました。A条件はフェーズ3.4の既存モデルを再利用し、Smooth条件のみ新規モデルから学習しました。Stage 2、Stage 3、追加の長時間学習は開始していません。
+
+比較条件:
+
+| 条件 | 設定ファイル | action_smoothness_weight | 学習seed |
+| --- | --- | ---: | --- |
+| A | `configs\phase31_stage1_A_current.json` | 0.0 | 4242, 5252, 6262 |
+| Smooth | `configs\phase35_stage1_action_smoothness.json` | 0.2 | 4242, 5252, 6262 |
+
+共通条件:
+
+```text
+MuJoCo Humanoid-v5
+PPO + VecNormalize
+CPU実行
+学習中3D描画なし
+各モデル 100,352 step
+評価seed 6000〜6019
+評価20エピソード/model
+deterministic=True
+VecNormalize.training=False
+VecNormalize.norm_reward=False
+最大1000 step
+```
+
+速度ベンチマーク:
+
+| 項目 | 結果 |
+| --- | ---: |
+| ベンチマークstep | 5,120 |
+| 実測時間 | 22.231秒 |
+| 速度 | 230.310 steps/sec |
+| 100,352 step x 3本の推定 | 約21.8分 |
+
+Smooth条件の実測学習時間:
+
+| 学習seed | 学習step | 時間 | steps/sec |
+| ---: | ---: | ---: | ---: |
+| 4242 | 100,352 | 483.764秒 | 207.440 |
+| 5252 | 100,352 | 453.454秒 | 221.306 |
+| 6262 | 100,352 | 455.946秒 | 220.096 |
+
+TensorBoardでは、Smooth条件の学習中に`phase3_penalty_action_smoothness`、`phase3_action_delta_sq_mean`、`phase3_action_delta_rms`が記録され、action差分ペナルティーが学習中に実際に計算されていることを確認しました。
+
+評価結果:
+
+| 条件 | seed | 生存step | 転倒率 | 歩行候補率 | 安定歩行成功率 | 前進距離 | 前進速度 | 左右移動量 | 胴体姿勢 | 接地切替 | 足滑り平均 | action差分RMS | action飽和率 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| A | 4242 | 83.30 | 100% | 85% | 0% | 0.751 | 0.427 | 0.244 | 0.972 | 4.70 | 0.153 | 0.384 | 50.7% |
+| A | 5252 | 85.05 | 100% | 0% | 0% | 0.778 | 0.412 | 0.410 | 0.955 | 1.60 | 0.118 | 0.139 | 39.4% |
+| A | 6262 | 82.20 | 100% | 70% | 0% | 0.860 | 0.506 | 0.072 | 0.939 | 3.15 | 0.262 | 0.331 | 49.4% |
+| Smooth | 4242 | 66.90 | 100% | 15% | 0% | 0.659 | 0.478 | 0.236 | 0.885 | 2.75 | 0.281 | 0.264 | 40.4% |
+| Smooth | 5252 | 75.40 | 100% | 95% | 0% | 0.631 | 0.407 | 0.115 | 0.976 | 3.60 | 0.170 | 0.166 | 48.8% |
+| Smooth | 6262 | 68.80 | 100% | 0% | 0% | -0.026 | 0.019 | 0.497 | 0.963 | 1.05 | 0.141 | 0.126 | 36.2% |
+
+3seed平均:
+
+| 条件 | 生存step | 転倒率 | 歩行候補率 | 安定歩行成功率 | 前進距離 | 前進速度 | 左右移動量 | action差分RMS | action飽和率 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| A | 83.52 | 100% | 51.7% | 0% | 0.796 | 0.449 | 0.242 | 0.285 | 46.5% |
+| Smooth | 70.37 | 100% | 36.7% | 0% | 0.421 | 0.301 | 0.283 | 0.185 | 41.8% |
+
+AからSmoothへの同一seed差分:
+
+| 指標 | 改善seed数/3 | 平均差分 | 解釈 |
+| --- | ---: | ---: | --- |
+| 生存step | 0 | -13.15 | 全seedで悪化 |
+| 転倒率 | 0 | 0.00 | 全seedで100%のまま |
+| 安定歩行成功率 | 0 | 0.00 | 全seedで0%のまま |
+| 歩行候補率 | 1 | -15.0pt | seed 5252のみ改善 |
+| 前進距離 | 0 | -0.375 | 全seedで悪化 |
+| 前進速度 | 1 | -0.147 | seed 4242のみ改善 |
+| 左右移動量 | 2 | +0.041 | 2seedで改善したが、平均は悪化 |
+| 足滑り平均 | 1 | +0.019 | 1seedのみ改善 |
+| action差分RMS | 2 | -0.100 | 2seedで滑らかになった |
+| action飽和率 | 2 | -4.7pt | 2seedで低下 |
+
+解釈:
+
+- Smooth設定は、目的どおりaction差分RMSとaction飽和率を2/3 seedで下げました。
+- ただし、平均生存step、前進距離、前進速度、歩行候補率はAより悪化しました。
+- 特にseed 6262では、Smoothによりaction差分と足滑りは下がった一方で、前進距離が`-0.026`となり、前進能力がほぼ失われました。
+- seed 5252では歩行候補率と左右移動量、姿勢が改善しましたが、生存stepと前進距離は低下しました。
+- 3seedすべてで転倒率100%、安定歩行成功率0%のままであり、安定歩行は未達です。
+- actionを滑らかにすること自体は効いていますが、重み`0.2`をそのまま採用して改善とは判定できません。前進能力を失わずに滑らかさを入れるには、より弱い重み、スケジュール型の重み、または胴体高さ・転倒直前姿勢を優先する設計との組み合わせが必要です。
+
+出力:
+
+```text
+work\phase36_smoothness_comparison\phase36_model_summary.csv
+work\phase36_smoothness_comparison\phase36_episode_summary_all.csv
+work\phase36_smoothness_comparison\phase36_same_seed_deltas.csv
+work\phase36_smoothness_comparison\phase36_reward_condition_stats.csv
+work\phase36_smoothness_comparison\phase36_improvement_counts.csv
+work\phase36_smoothness_comparison\phase36_threshold_sensitivity.csv
+work\phase36_smoothness_comparison\phase36_smoothness_comparison.json
+outputs\phase36_smoothness_comparison\phase36_smooth_minus_A_deltas.svg
+outputs\phase36_smoothness_comparison\phase36_A_seed4242_seed6000.gif
+outputs\phase36_smoothness_comparison\phase36_A_seed5252_seed6000.gif
+outputs\phase36_smoothness_comparison\phase36_A_seed6262_seed6000.gif
+outputs\phase36_smoothness_comparison\phase36_Smooth_seed4242_seed6000.gif
+outputs\phase36_smoothness_comparison\phase36_Smooth_seed5252_seed6000.gif
+outputs\phase36_smoothness_comparison\phase36_Smooth_seed6262_seed6000.gif
+```
+
+Smoothモデルの3D再生コマンド:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe play.py --agent model --model checkpoints\phase36_smooth_seed4242_100k\phase36_smooth_seed4242_100k_latest.zip --vec-normalize-stats checkpoints\phase36_smooth_seed4242_100k\phase36_smooth_seed4242_100k_vecnormalize.pkl --curriculum-config configs\phase35_stage1_action_smoothness.json --curriculum-stage stage1 --render-mode human --episodes 1 --max-steps 1000 --seed 6000 --deterministic --device cpu --sleep 0.005
+
+.\.venv_phase1\Scripts\python.exe play.py --agent model --model checkpoints\phase36_smooth_seed5252_100k\phase36_smooth_seed5252_100k_latest.zip --vec-normalize-stats checkpoints\phase36_smooth_seed5252_100k\phase36_smooth_seed5252_100k_vecnormalize.pkl --curriculum-config configs\phase35_stage1_action_smoothness.json --curriculum-stage stage1 --render-mode human --episodes 1 --max-steps 1000 --seed 6000 --deterministic --device cpu --sleep 0.005
+
+.\.venv_phase1\Scripts\python.exe play.py --agent model --model checkpoints\phase36_smooth_seed6262_100k\phase36_smooth_seed6262_100k_latest.zip --vec-normalize-stats checkpoints\phase36_smooth_seed6262_100k\phase36_smooth_seed6262_100k_vecnormalize.pkl --curriculum-config configs\phase35_stage1_action_smoothness.json --curriculum-stage stage1 --render-mode human --episodes 1 --max-steps 1000 --seed 6000 --deterministic --device cpu --sleep 0.005
+```
+
+テスト:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe -m py_compile analyze_phase36_smoothness_comparison.py
+.\.venv_phase1\Scripts\python.exe tests\test_phase36_smoothness_comparison.py
+```
+
+結果:
+
+```text
+phase36_smoothness_comparison_tests_done=true
+```
