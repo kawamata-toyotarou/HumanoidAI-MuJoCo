@@ -1,0 +1,28 @@
+{
+  "active_stage": "stage1",
+  "stages": {
+    "stage1": {
+      "stage_index": 1,
+      "target_forward_velocity": 0.25,
+      "velocity_sigma": 0.25,
+      "forward_tracking_weight": 1.5,
+      "survive_weight": 0.6,
+      "ctrl_weight": 0.8,
+      "contact_weight": 0.8,
+      "lateral_velocity_weight": 2.5,
+      "torso_tilt_weight": 6.0,
+      "torso_height_weight": 4.0,
+      "min_torso_height": 1.05,
+      "fall_penalty": -35.0
+    }
+  },
+  "success_criteria": {
+    "stage1": {
+      "min_survival_steps_mean": 150,
+      "max_fall_rate": 0.8,
+      "min_forward_distance_mean": 0.35,
+      "max_lateral_abs_displacement_mean": 0.35,
+      "min_torso_upright_mean": 0.9
+    }
+  }
+}

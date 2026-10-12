@@ -1,0 +1,42 @@
+.venv/
+.venv_phase1/
+__pycache__/
+*.py[cod]
+
+# Training artifacts and generated outputs
+checkpoints/
+backups/
+work/
+runs/
+outputs/
+
+# Large model/media files that should not be committed accidentally
+*.zip
+*.pkl
+*.pt
+*.pth
+*.onnx
+*.gif
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Local environment and secrets
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.token
+secrets.*
+*_secret*
+*_apikey*
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

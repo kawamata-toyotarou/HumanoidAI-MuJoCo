@@ -1,0 +1,11 @@
+{
+  "target_forward_velocity": 1.0,
+  "velocity_sigma": 0.5,
+  "forward_tracking_weight": 3.0,
+  "survive_weight": 1.0,
+  "ctrl_weight": 1.0,
+  "contact_weight": 1.0,
+  "lateral_velocity_weight": 1.0,
+  "torso_tilt_weight": 2.0,
+  "fall_penalty": -25.0
+}
