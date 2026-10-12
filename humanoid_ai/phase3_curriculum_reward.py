@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import gymnasium as gym
+import numpy as np
 
 
 PHASE3_INFO_KEYS = (
@@ -19,6 +20,9 @@ PHASE3_INFO_KEYS = (
     "phase3_penalty_lateral_velocity",
     "phase3_penalty_torso_tilt",
     "phase3_penalty_torso_height",
+    "phase3_penalty_action_smoothness",
+    "phase3_action_delta_sq_mean",
+    "phase3_action_delta_rms",
     "phase3_penalty_fall",
     "phase3_forward_velocity_error",
     "phase3_x_velocity",
@@ -44,6 +48,7 @@ class Phase3StageRewardConfig:
     torso_height_weight: float
     min_torso_height: float
     fall_penalty: float
+    action_smoothness_weight: float = 0.0
 
     @classmethod
     def from_dict(cls, name: str, data: dict[str, Any]) -> "Phase3StageRewardConfig":
@@ -100,6 +105,7 @@ def compute_phase3_reward(
     info: dict[str, Any],
     torso_upright: float,
     torso_height: float,
+    action_delta_sq_mean: float = 0.0,
 ) -> tuple[float, dict[str, float]]:
     x_velocity = float(info.get("x_velocity", 0.0))
     y_velocity = float(info.get("y_velocity", 0.0))
@@ -116,6 +122,8 @@ def compute_phase3_reward(
     tilt_penalty = -cfg.torso_tilt_weight * (1.0 - upright_clipped) * (1.0 - upright_clipped)
     height_error = max(0.0, cfg.min_torso_height - torso_height)
     height_penalty = -cfg.torso_height_weight * height_error * height_error
+    action_delta_sq_mean = max(0.0, float(action_delta_sq_mean))
+    action_smoothness_penalty = -cfg.action_smoothness_weight * action_delta_sq_mean
     fall_penalty = cfg.fall_penalty if terminated else 0.0
 
     reward = (
@@ -126,6 +134,7 @@ def compute_phase3_reward(
         + lateral_penalty
         + tilt_penalty
         + height_penalty
+        + action_smoothness_penalty
         + fall_penalty
     )
 
@@ -139,6 +148,9 @@ def compute_phase3_reward(
         "phase3_penalty_lateral_velocity": float(lateral_penalty),
         "phase3_penalty_torso_tilt": float(tilt_penalty),
         "phase3_penalty_torso_height": float(height_penalty),
+        "phase3_penalty_action_smoothness": float(action_smoothness_penalty),
+        "phase3_action_delta_sq_mean": float(action_delta_sq_mean),
+        "phase3_action_delta_rms": float(math.sqrt(action_delta_sq_mean)),
         "phase3_penalty_fall": float(fall_penalty),
         "phase3_forward_velocity_error": float(forward_error),
         "phase3_x_velocity": float(x_velocity),
@@ -156,6 +168,7 @@ class Phase3CurriculumRewardWrapper(gym.Wrapper):
     def __init__(self, env: gym.Env, config: Phase3CurriculumConfig) -> None:
         super().__init__(env)
         self.config = config
+        self._previous_action: np.ndarray | None = None
 
     @property
     def reward_config(self) -> dict[str, float | int | str]:
@@ -172,7 +185,24 @@ class Phase3CurriculumRewardWrapper(gym.Wrapper):
         torso_height = float(base_env.data.qpos[2])
         return torso_upright, torso_height
 
+    def reset(self, **kwargs: Any):
+        self._previous_action = None
+        return self.env.reset(**kwargs)
+
+    def action_delta_sq_mean(self, action: Any) -> float:
+        current = np.asarray(action, dtype=np.float64).reshape(-1)
+        if self._previous_action is None:
+            previous = np.zeros_like(current)
+        else:
+            previous = self._previous_action
+        if previous.shape != current.shape:
+            previous = np.zeros_like(current)
+        delta = current - previous
+        self._previous_action = current.copy()
+        return float(np.mean(delta * delta)) if delta.size else 0.0
+
     def step(self, action: Any):
+        action_delta_sq_mean = self.action_delta_sq_mean(action)
         obs, original_reward, terminated, truncated, info = self.env.step(action)
         torso_upright, torso_height = self.torso_state()
         reward, components = compute_phase3_reward(
@@ -182,6 +212,7 @@ class Phase3CurriculumRewardWrapper(gym.Wrapper):
             info=info,
             torso_upright=torso_upright,
             torso_height=torso_height,
+            action_delta_sq_mean=action_delta_sq_mean,
         )
         info.update(components)
         return obs, reward, terminated, truncated, info

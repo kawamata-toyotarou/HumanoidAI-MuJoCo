@@ -157,6 +157,25 @@ def saturation_fraction(values: np.ndarray, threshold: float) -> float:
     return float(np.mean(np.abs(values) >= threshold))
 
 
+def rms(values: np.ndarray) -> float:
+    values = np.asarray(values, dtype=np.float64).reshape(-1)
+    if values.size == 0:
+        return 0.0
+    return float(np.sqrt(np.mean(values * values)))
+
+
+def pearson_correlation(x_values: list[float], y_values: list[float]) -> float:
+    if len(x_values) < 2 or len(y_values) < 2 or len(x_values) != len(y_values):
+        return 0.0
+    x = np.asarray(x_values, dtype=np.float64)
+    y = np.asarray(y_values, dtype=np.float64)
+    x_std = float(np.std(x))
+    y_std = float(np.std(y))
+    if x_std <= 1e-12 or y_std <= 1e-12:
+        return 0.0
+    return float(np.corrcoef(x, y)[0, 1])
+
+
 def build_phase33_row(
     *,
     condition: Condition,
@@ -187,10 +206,16 @@ def build_phase33_row(
         left_velocity = (left_pos - previous["left_pos"]) / dt
         right_velocity = (right_pos - previous["right_pos"]) / dt
         torso_height_velocity = (torso["torso_height"] - float(previous["torso_height"])) / dt
+        action_delta = action - previous["action"]
+        qvel_delta = qvel - previous["qvel"]
+        qvel_delta_rate = qvel_delta / dt
     else:
         left_velocity = np.zeros(3, dtype=np.float64)
         right_velocity = np.zeros(3, dtype=np.float64)
         torso_height_velocity = 0.0
+        action_delta = action
+        qvel_delta = np.zeros_like(qvel)
+        qvel_delta_rate = np.zeros_like(qvel)
 
     left_slip_speed = float(np.linalg.norm(left_velocity[:2])) if contacts["left_foot_contact"] else 0.0
     right_slip_speed = float(np.linalg.norm(right_velocity[:2])) if contacts["right_foot_contact"] else 0.0
@@ -214,6 +239,9 @@ def build_phase33_row(
         "phase3_penalty_lateral_velocity": float(info.get("phase3_penalty_lateral_velocity", 0.0)),
         "phase3_penalty_torso_tilt": float(info.get("phase3_penalty_torso_tilt", 0.0)),
         "phase3_penalty_torso_height": float(info.get("phase3_penalty_torso_height", 0.0)),
+        "phase3_penalty_action_smoothness": float(info.get("phase3_penalty_action_smoothness", 0.0)),
+        "phase3_action_delta_sq_mean": float(info.get("phase3_action_delta_sq_mean", rms(action_delta) ** 2)),
+        "phase3_action_delta_rms": float(info.get("phase3_action_delta_rms", rms(action_delta))),
         "phase3_penalty_fall": float(info.get("phase3_penalty_fall", 0.0)),
         **torso,
         "torso_height_velocity": torso_height_velocity,
@@ -230,6 +258,12 @@ def build_phase33_row(
         "left_foot_slip_speed": left_slip_speed,
         "right_foot_slip_speed": right_slip_speed,
         "foot_slip_speed_max": max(left_slip_speed, right_slip_speed),
+        "action_delta_rms": rms(action_delta),
+        "action_delta_abs_max": float(np.max(np.abs(action_delta))) if action_delta.size else 0.0,
+        "qvel_delta_rms": rms(qvel_delta),
+        "qvel_delta_abs_max": float(np.max(np.abs(qvel_delta))) if qvel_delta.size else 0.0,
+        "qvel_delta_rate_rms": rms(qvel_delta_rate),
+        "qvel_delta_rate_abs_max": float(np.max(np.abs(qvel_delta_rate))) if qvel_delta_rate.size else 0.0,
         "action_saturation_fraction": saturation_fraction(action, saturation_threshold),
         "ctrl_saturation_fraction": saturation_fraction(ctrl, saturation_threshold),
         **vector_stats("qvel", qvel),
@@ -295,6 +329,16 @@ def summarize_episode(
         "right_slip_speed_mean": mean(right_slips),
         "foot_slip_speed_mean": mean(all_slips),
         "foot_slip_speed_max": max(all_slips) if all_slips else 0.0,
+        "action_delta_rms_mean": mean([safe_float(row.get("action_delta_rms")) for row in rows]),
+        "action_delta_abs_max": max(safe_float(row.get("action_delta_abs_max")) for row in rows),
+        "qvel_delta_rms_mean": mean([safe_float(row.get("qvel_delta_rms")) for row in rows]),
+        "qvel_delta_abs_max": max(safe_float(row.get("qvel_delta_abs_max")) for row in rows),
+        "qvel_delta_rate_rms_mean": mean([safe_float(row.get("qvel_delta_rate_rms")) for row in rows]),
+        "qvel_delta_rate_abs_max": max(safe_float(row.get("qvel_delta_rate_abs_max")) for row in rows),
+        "slip_action_delta_correlation": pearson_correlation(
+            [safe_float(row["foot_slip_speed_max"]) for row in rows],
+            [safe_float(row.get("action_delta_rms")) for row in rows],
+        ),
         "action_saturation_fraction_mean": mean([safe_float(row["action_saturation_fraction"]) for row in rows]),
         "ctrl_saturation_fraction_mean": mean([safe_float(row["ctrl_saturation_fraction"]) for row in rows]),
         "qvel_abs_max": max(safe_float(row["qvel_abs_max"]) for row in rows),
@@ -330,6 +374,15 @@ def aggregate_condition(rows: list[dict[str, Any]], episode_summaries: list[dict
         "nonfoot_floor_contact_rate": mean([safe_float(row["nonfoot_floor_contact"]) for row in rows]),
         "foot_slip_speed_mean": mean([safe_float(row["foot_slip_speed_mean"]) for row in episode_summaries]),
         "foot_slip_speed_max_mean": mean([safe_float(row["foot_slip_speed_max"]) for row in episode_summaries]),
+        "action_delta_rms_mean": mean([safe_float(row["action_delta_rms_mean"]) for row in episode_summaries]),
+        "action_delta_abs_max_mean": mean([safe_float(row["action_delta_abs_max"]) for row in episode_summaries]),
+        "qvel_delta_rms_mean": mean([safe_float(row["qvel_delta_rms_mean"]) for row in episode_summaries]),
+        "qvel_delta_abs_max_mean": mean([safe_float(row["qvel_delta_abs_max"]) for row in episode_summaries]),
+        "qvel_delta_rate_rms_mean": mean([safe_float(row["qvel_delta_rate_rms_mean"]) for row in episode_summaries]),
+        "qvel_delta_rate_abs_max_mean": mean([safe_float(row["qvel_delta_rate_abs_max"]) for row in episode_summaries]),
+        "slip_action_delta_correlation_mean": mean(
+            [safe_float(row["slip_action_delta_correlation"]) for row in episode_summaries]
+        ),
         "action_saturation_fraction_mean": mean([safe_float(row["action_saturation_fraction_mean"]) for row in episode_summaries]),
         "ctrl_saturation_fraction_mean": mean([safe_float(row["ctrl_saturation_fraction_mean"]) for row in episode_summaries]),
         "qvel_abs_max_mean": mean([safe_float(row["qvel_abs_max"]) for row in episode_summaries]),
@@ -393,6 +446,8 @@ def evaluate_condition(
                     "left_pos": np.asarray([row["left_foot_x"], row["left_foot_y"], row["left_foot_z"]], dtype=np.float64),
                     "right_pos": np.asarray([row["right_foot_x"], row["right_foot_y"], row["right_foot_z"]], dtype=np.float64),
                     "torso_height": np.asarray(row["torso_height"], dtype=np.float64),
+                    "action": action_array.copy(),
+                    "qvel": np.asarray(base_env.data.qvel, dtype=np.float64).copy(),
                 }
                 rows.append(row)
                 episode_rows.append(row)

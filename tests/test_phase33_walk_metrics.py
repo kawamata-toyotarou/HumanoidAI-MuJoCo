@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT))
 from analyze_phase33_walk import (  # noqa: E402
     compressed_single_support,
     contact_switch_metrics,
+    pearson_correlation,
     saturation_fraction,
     summarize_episode,
 )
@@ -37,9 +38,16 @@ def row(step: int, phase: str, *, x: float = 0.0, y: float = 0.0, slip: float = 
         "nonfoot_floor_contact": 0,
         "left_foot_slip_speed": slip if left else 0.0,
         "right_foot_slip_speed": slip if right else 0.0,
+        "foot_slip_speed_max": slip,
         "action_saturation_fraction": 0.25,
         "ctrl_saturation_fraction": 0.5,
         "qvel_abs_max": 2.0,
+        "action_delta_rms": 0.2,
+        "action_delta_abs_max": 0.4,
+        "qvel_delta_rms": 0.3,
+        "qvel_delta_abs_max": 0.6,
+        "qvel_delta_rate_rms": 3.0,
+        "qvel_delta_rate_abs_max": 6.0,
     }
 
 
@@ -79,6 +87,9 @@ def main() -> None:
     assert slipping_summary["walk_candidate"] is False
 
     assert saturation_fraction([0.0, 0.4, -0.41, 0.2], 0.39) == 0.5
+    assert round(pearson_correlation([1.0, 2.0, 3.0], [2.0, 4.0, 6.0]), 6) == 1.0
+    assert abs(summary["action_delta_rms_mean"] - 0.2) < 1e-12
+    assert summary["qvel_delta_rate_rms_mean"] == 3.0
     print("phase33_walk_metric_tests_done=true")
 
 

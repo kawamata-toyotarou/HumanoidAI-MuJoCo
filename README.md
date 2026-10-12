@@ -1683,3 +1683,120 @@ phase34_multiseed_stats_tests_done=true
 - seed `6262`は前進距離と左右移動量は良い一方、足滑りが最も大きく、胴体姿勢の平均が最も低いです。
 - seed `4242`は歩行候補率が最も高いですが、全エピソードで転倒し、安定成功には届いていません。
 - A設定は「短時間だけ前進する傾向」は複数seedで見られますが、「安定した二足歩行」は再現していません。次はAを基準に、胴体高さ低下、接地中の足滑り、制御入力の急変を抑える報酬・カリキュラム改善を検討します。
+
+## フェーズ3.5: action滑らかさ報酬と制御変化解析
+
+フェーズ3.5では、急激な制御指令の変化が転倒や歩行不安定性に関係しているかを調べるため、Stage 1 Aを変更せず、派生設定としてaction差分ペナルティーを追加しました。今回は実装、既存モデルの再評価、1024 stepのsmoke testのみ実施し、100,000 step以上の本格比較学習は開始していません。
+
+追加・変更したファイル:
+
+```text
+humanoid_ai\phase3_curriculum_reward.py
+configs\phase35_stage1_action_smoothness.json
+analyze_phase35_action_smoothness.py
+tests\test_phase35_action_smoothness.py
+```
+
+報酬設計:
+
+```text
+action_delta = action_t - action_{t-1}
+初回step: action_{t-1} = 0
+episode reset時: action_{t-1}をリセット
+action_delta_sq_mean = mean(action_delta^2)
+phase3_penalty_action_smoothness = -action_smoothness_weight * action_delta_sq_mean
+```
+
+`action`はMuJoCo環境へ渡す実際の制御入力を使い、VecNormalizeの観測正規化とは独立して計測します。既存A設定は`action_smoothness_weight=0.0`のまま扱われ、挙動は変えません。
+
+比較する報酬設定:
+
+| 条件 | 設定ファイル | action_smoothness_weight | 目的 |
+| --- | --- | ---: | --- |
+| A | `configs\phase31_stage1_A_current.json` | 0.0 | 現行Stage 1基準 |
+| Smooth | `configs\phase35_stage1_action_smoothness.json` | 0.2 | actionの急変を弱く抑える |
+
+既存Aモデルのaction差分基準値:
+
+| 学習seed | action差分RMS平均 | p75 | p90 | 足滑り最大平均 | 足滑り-action差分相関 | 関節速度変化RMS | 関節加速度相当RMS |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4242 | 0.384 | 0.466 | 0.505 | 0.138 | -0.038 | 3.178 | 211.897 |
+| 5252 | 0.139 | 0.217 | 0.307 | 0.119 | 0.121 | 1.211 | 80.723 |
+| 6262 | 0.329 | 0.437 | 0.494 | 0.199 | 0.165 | 3.034 | 202.270 |
+
+重み候補:
+
+- `action_smoothness_weight=0.2`を採用しました。
+- この重みでは、p75 action差分に対する追加ペナルティーはseedごとに約`-0.009`〜`-0.043`/step、p90では約`-0.019`〜`-0.051`/stepです。
+- Stage 1の速度追従報酬や生存報酬に比べて小さく、強すぎて動作が止まる可能性を避けるための控えめな値です。
+- 効果はsmoke testだけでは判断しません。本格比較では、前進距離と生存時間が落ちすぎないかを必ず確認します。
+
+既存3モデルの再評価:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe analyze_phase35_action_smoothness.py --episodes 20 --max-steps 1000 --seed 6000 --device cpu --curriculum-stage stage1 --out-dir work\phase35_action_smoothness --graph-dir outputs\phase35_action_smoothness
+```
+
+再評価結果:
+
+| 学習seed | 平均生存step | 転倒率 | 歩行候補率 | 安定歩行成功率 | 前進距離 | 左右移動量 | action飽和率 | action差分RMS |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4242 | 83.30 | 100% | 85% | 0% | 0.751 | 0.244 | 50.7% | 0.384 |
+| 5252 | 85.05 | 100% | 0% | 0% | 0.778 | 0.410 | 39.4% | 0.139 |
+| 6262 | 82.20 | 100% | 70% | 0% | 0.860 | 0.072 | 49.4% | 0.331 |
+
+閾値感度:
+
+| 学習seed | base | strict slip | loose slip | strict lateral | loose lateral | strict upright |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4242 | 85% | 85% | 85% | 50% | 95% | 85% |
+| 5252 | 0% | 0% | 0% | 0% | 15% | 0% |
+| 6262 | 70% | 25% | 75% | 70% | 70% | 15% |
+
+解釈:
+
+- `walk_candidate`はseed 4242では主に左右移動量の閾値、seed 6262では足滑りと胴体姿勢の閾値に敏感でした。
+- seed 5252は横流れが大きく、横方向閾値を緩めても歩行候補率は15%までしか上がりませんでした。
+- 3モデルとも安定歩行成功率は0%で、閾値を少し動かしても安定歩行成功とは判定されません。
+- 足滑りとaction差分の相関は弱く、4242ではほぼ無相関、5252/6262では弱い正相関でした。action急変だけが不安定性の単独原因とはまだ言えません。
+
+smoke test:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe train_phase25.py --total-timesteps 1024 --seed 4242 --run-name phase35_smooth_smoke --checkpoint-dir work\phase35_smooth_smoke --final-name-prefix phase35_smooth_smoke --log-dir runs\tensorboard --save-freq 512 --device cpu --vec-normalize --curriculum-config configs\phase35_stage1_action_smoothness.json --curriculum-stage stage1
+
+.\.venv_phase1\Scripts\python.exe play.py --agent model --model work\phase35_smooth_smoke\phase35_smooth_smoke_latest.zip --vec-normalize-stats work\phase35_smooth_smoke\phase35_smooth_smoke_vecnormalize.pkl --curriculum-config configs\phase35_stage1_action_smoothness.json --curriculum-stage stage1 --render-mode none --episodes 1 --max-steps 32 --seed 6000 --deterministic --device cpu
+```
+
+結果:
+
+| 項目 | 結果 |
+| --- | ---: |
+| smoke test学習step | 1024 |
+| 学習時間 | 4.188秒 |
+| steps/sec | 244.519 |
+| 保存モデル | `work\phase35_smooth_smoke\phase35_smooth_smoke_latest.zip` |
+| VecNormalize統計 | `work\phase35_smooth_smoke\phase35_smooth_smoke_vecnormalize.pkl` |
+| 読み込み確認 | 32 step再生成功、terminated=False、truncated=False |
+
+TensorBoardには`phase3_penalty_action_smoothness`、`phase3_action_delta_sq_mean`、`phase3_action_delta_rms`が記録されました。1024 stepは動作確認であり、滑らかさ報酬の改善効果は判断していません。
+
+出力:
+
+```text
+work\phase35_action_smoothness\phase35_baseline_summary.csv
+work\phase35_action_smoothness\phase35_episode_summary_all.csv
+work\phase35_action_smoothness\phase35_action_delta_distribution.csv
+work\phase35_action_smoothness\phase35_threshold_sensitivity.csv
+work\phase35_action_smoothness\phase35_action_smoothness_analysis.json
+outputs\phase35_action_smoothness\phase35_slip_vs_action_delta.svg
+```
+
+本格比較実験の推定時間:
+
+| 実験案 | 推定時間 |
+| --- | ---: |
+| Smooth設定 x 3seed x 100,352 step | 約10〜14分 + 評価1〜2分 |
+| AとSmoothを両方新規学習 x 3seed | 約20〜28分 + 評価2〜4分 |
+
+次に進むなら、まずSmooth設定を`4242`, `5252`, `6262`の3seedで100,000 stepずつ学習し、既存Aの3seedと同じ評価指標で比較するのが最小の検証になります。

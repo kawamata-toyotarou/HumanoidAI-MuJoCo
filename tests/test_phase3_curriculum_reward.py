@@ -102,9 +102,43 @@ def check_stage(stage_name: str) -> None:
     )
 
 
+def check_action_smoothness_penalty() -> None:
+    stage = Phase3CurriculumConfig.from_path(CONFIG_PATH, stage_name="stage1").stage
+    stage = type(stage)(**{**stage.to_dict(), "action_smoothness_weight": 0.2})
+    info = {
+        "reward_survive": 5.0,
+        "reward_ctrl": -0.1,
+        "reward_contact": -0.05,
+        "x_velocity": stage.target_forward_velocity,
+        "y_velocity": 0.0,
+    }
+    reward_without, _ = compute_phase3_reward(
+        stage,
+        original_reward=0.0,
+        terminated=False,
+        info=info,
+        torso_upright=1.0,
+        torso_height=stage.min_torso_height,
+        action_delta_sq_mean=0.0,
+    )
+    reward_with, components = compute_phase3_reward(
+        stage,
+        original_reward=0.0,
+        terminated=False,
+        info=info,
+        torso_upright=1.0,
+        torso_height=stage.min_torso_height,
+        action_delta_sq_mean=0.25,
+    )
+    assert_close(components["phase3_penalty_action_smoothness"], -0.05, "action_smoothness.penalty")
+    assert_close(components["phase3_action_delta_rms"], 0.5, "action_smoothness.rms")
+    assert_close(reward_with, reward_without - 0.05, "action_smoothness.reward")
+
+
 def main() -> None:
     for stage_name in ("stage1", "stage2", "stage3"):
         check_stage(stage_name)
+    check_action_smoothness_penalty()
     print("phase3_curriculum_reward_tests_done=true")
 
 

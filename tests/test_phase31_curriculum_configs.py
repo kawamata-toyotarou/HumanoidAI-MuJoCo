@@ -17,6 +17,7 @@ CONFIGS = {
     "A": ROOT / "configs" / "phase31_stage1_A_current.json",
     "B": ROOT / "configs" / "phase31_stage1_B_fall_penalty.json",
     "C": ROOT / "configs" / "phase31_stage1_C_slow_stability.json",
+    "Smooth": ROOT / "configs" / "phase35_stage1_action_smoothness.json",
 }
 
 
@@ -29,6 +30,9 @@ def main() -> None:
     assert stages["B"].fall_penalty < stages["A"].fall_penalty
     assert stages["C"].target_forward_velocity < stages["A"].target_forward_velocity
     assert stages["C"].torso_tilt_weight >= stages["A"].torso_tilt_weight
+    assert stages["A"].action_smoothness_weight == 0.0
+    assert stages["Smooth"].action_smoothness_weight > 0.0
+    assert stages["Smooth"].target_forward_velocity == stages["A"].target_forward_velocity
 
     base_info = {
         "reward_survive": 5.0,
