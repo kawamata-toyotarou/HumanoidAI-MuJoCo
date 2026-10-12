@@ -1401,3 +1401,75 @@ A/B/Cの1024 step smoke test:
 3. 合計報酬ではなく、平均生存step、転倒率、前進距離、左右移動量、胴体姿勢、転倒直前20 stepを比較する。
 
 今回は解析、設定作成、単体テスト、1024 step smoke testのみ実施しました。Stage 2・Stage 3および長時間学習は開始していません。
+
+## フェーズ3.2: Stage 1 A/B/C 100,000 step比較実験
+
+フェーズ3.2では、フェーズ3.1で作成した3種類のStage 1報酬設定を、それぞれ新規PPO + VecNormalizeモデルから100,000 step学習しました。seedはすべて`4242`、CPU実行、PPOハイパーパラメータは同一、学習時の3D描画は無効です。既存モデル、統計、ログは上書きしていません。
+
+| 条件 | 設定 | 保存先 | 実学習step | 学習時間 | steps/sec |
+| --- | --- | --- | ---: | ---: | ---: |
+| A | 現行Stage 1 | `checkpoints\phase32_A_current_100k` | 100,352 | 191.922秒 | 522.879 |
+| B | 転倒ペナルティー強化 | `checkpoints\phase32_B_fall_penalty_100k` | 100,352 | 183.729秒 | 546.194 |
+| C | 低速・姿勢重視 | `checkpoints\phase32_C_slow_stability_100k` | 100,352 | 180.967秒 | 554.533 |
+
+評価は3条件とも同じseed列`6000`から20エピソード、最大1000 step、deterministic、保存済みVecNormalize統計を読み込み、統計更新と報酬正規化を無効にして実施しました。
+
+| 条件 | 平均生存step | 転倒率 | 平均前進距離 | 平均前進速度 | 平均左右移動量 | 平均胴体姿勢 | terminated/truncated |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| A | 82.60 | 100% | 0.729 | 0.417 | 0.233 | 0.971 | 20 / 0 |
+| B | 88.40 | 100% | 0.615 | 0.292 | 0.315 | 0.895 | 20 / 0 |
+| C | 98.40 | 100% | 0.038 | 0.036 | 0.426 | 0.961 | 20 / 0 |
+
+足接地率:
+
+| 条件 | 左足接地率 | 右足接地率 | 両足接地率 | 足以外の床接地率 |
+| --- | ---: | ---: | ---: | ---: |
+| A | 55.2% | 51.4% | 23.9% | 0.0% |
+| B | 21.6% | 82.4% | 18.3% | 0.0% |
+| C | 59.4% | 78.9% | 54.1% | 0.0% |
+
+報酬成分の1 step平均:
+
+| 条件 | total | survive | velocity tracking | lateral penalty | tilt penalty | height penalty | fall penalty |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| A | 3.094 | 2.963 | 0.962 | -0.133 | -0.016 | -0.000 | -0.429 |
+| B | 2.804 | 3.212 | 0.939 | -0.161 | -0.137 | -0.000 | -0.808 |
+| C | 3.109 | 3.711 | 0.620 | -0.318 | -0.033 | -0.001 | -0.617 |
+
+評価CSVと集約ファイル:
+
+```text
+work\phase32_A_current_100k_eval.csv
+work\phase32_B_fall_penalty_100k_eval.csv
+work\phase32_C_slow_stability_100k_eval.csv
+work\phase32_abc_summary.csv
+work\phase32_abc_summary.json
+```
+
+GIF保存:
+
+```text
+outputs\phase32_A_current_100k_seed6000.gif
+outputs\phase32_B_fall_penalty_100k_seed6000.gif
+outputs\phase32_C_slow_stability_100k_seed6000.gif
+```
+
+3D再生コマンド:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe play.py --agent model --model checkpoints\phase32_A_current_100k\phase32_A_current_100k_seed4242_latest.zip --vec-normalize-stats checkpoints\phase32_A_current_100k\phase32_A_current_100k_seed4242_vecnormalize.pkl --curriculum-config configs\phase31_stage1_A_current.json --curriculum-stage stage1 --render-mode human --episodes 1 --max-steps 1000 --seed 6000 --deterministic --device cpu --sleep 0.005
+
+.\.venv_phase1\Scripts\python.exe play.py --agent model --model checkpoints\phase32_B_fall_penalty_100k\phase32_B_fall_penalty_100k_seed4242_latest.zip --vec-normalize-stats checkpoints\phase32_B_fall_penalty_100k\phase32_B_fall_penalty_100k_seed4242_vecnormalize.pkl --curriculum-config configs\phase31_stage1_B_fall_penalty.json --curriculum-stage stage1 --render-mode human --episodes 1 --max-steps 1000 --seed 6000 --deterministic --device cpu --sleep 0.005
+
+.\.venv_phase1\Scripts\python.exe play.py --agent model --model checkpoints\phase32_C_slow_stability_100k\phase32_C_slow_stability_100k_seed4242_latest.zip --vec-normalize-stats checkpoints\phase32_C_slow_stability_100k\phase32_C_slow_stability_100k_seed4242_vecnormalize.pkl --curriculum-config configs\phase31_stage1_C_slow_stability.json --curriculum-stage stage1 --render-mode human --episodes 1 --max-steps 1000 --seed 6000 --deterministic --device cpu --sleep 0.005
+```
+
+分析:
+
+- Aは前進距離、前進速度、左右移動量のバランスが最も良く、フェーズ3.1のStage 1 100kと同等の傾向です。
+- Bは平均生存stepがAより伸びましたが、胴体姿勢が大きく悪化し、右足接地に強く偏りました。転倒ペナルティー強化だけでは安定歩行改善にはつながっていません。
+- Cは平均生存stepが最長で両足接地率も高い一方、前進距離と前進速度がほぼ消え、左右移動量が悪化しました。低速・姿勢重視設定は、前進歩行よりもその場に近い粘りへ寄った可能性があります。
+- 3条件すべて転倒率は100%で、安定歩行は未達です。報酬総量は条件ごとに設計が違うため、優劣判断には使っていません。
+- 次に進むなら、Aをベースに「速度を落としすぎず、転倒直前の高さ低下と片足偏りを抑える」方向で、転倒ペナルティー単独ではなく接地バランスや胴体高さ維持を含む調整を優先するのがよさそうです。
+
+今回はA/B/C各100,000 stepまでで停止し、Stage 2・Stage 3および300,000 stepを超える追加学習は開始していません。
