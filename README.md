@@ -1561,3 +1561,125 @@ outputs\phase33_walk\phase33_C_contact_timeline.svg
    - A派生3条件 x 3seed x 100,000 step: 学習だけで約27〜30分、評価込みで約32〜36分。
 
 今回は解析機能の実装と既存モデルの評価のみ実施しました。新規の長時間学習、Stage 2、Stage 3は開始していません。
+
+## フェーズ3.4: Stage 1 Aの複数seed再現性検証
+
+フェーズ3.4では、フェーズ3.3で有望だったStage 1報酬設定Aが、学習seedを変えても再現するかを確認しました。報酬設定は`configs\phase31_stage1_A_current.json`、`curriculum-stage=stage1`で固定し、PPO + VecNormalize、CPU実行、学習時の3D描画なしで実施しました。
+
+seed `4242`はフェーズ3.2の既存モデルを再利用し、再学習や上書きはしていません。新規学習は承認範囲のseed `5252`と`6262`のみ、それぞれ100,352 stepで停止しました。Stage 2・Stage 3は開始していません。
+
+追加した解析スクリプト:
+
+```text
+analyze_phase34_multiseed.py
+tests\test_phase34_multiseed_stats.py
+```
+
+新規学習コマンド:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe train_phase25.py --total-timesteps 100000 --seed 5252 --run-name phase34_A_seed5252_100k --checkpoint-dir checkpoints\phase34_A_seed5252_100k --final-name-prefix phase34_A_seed5252_100k --log-dir runs\tensorboard --save-freq 25000 --device cpu --vec-normalize --curriculum-config configs\phase31_stage1_A_current.json --curriculum-stage stage1
+
+.\.venv_phase1\Scripts\python.exe train_phase25.py --total-timesteps 100000 --seed 6262 --run-name phase34_A_seed6262_100k --checkpoint-dir checkpoints\phase34_A_seed6262_100k --final-name-prefix phase34_A_seed6262_100k --log-dir runs\tensorboard --save-freq 25000 --device cpu --vec-normalize --curriculum-config configs\phase31_stage1_A_current.json --curriculum-stage stage1
+```
+
+学習結果:
+
+| 学習seed | モデル | 学習step | 学習時間 | steps/sec | 備考 |
+| --- | --- | ---: | ---: | ---: | --- |
+| 4242 | `checkpoints\phase32_A_current_100k` | 100,352 | - | - | 既存モデルを再利用 |
+| 5252 | `checkpoints\phase34_A_seed5252_100k` | 100,352 | 264.871秒 | 378.871 | 新規学習 |
+| 6262 | `checkpoints\phase34_A_seed6262_100k` | 100,352 | 196.373秒 | 511.028 | 新規学習 |
+
+評価コマンド:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe analyze_phase34_multiseed.py --episodes 20 --max-steps 1000 --seed 6000 --device cpu --curriculum-stage stage1 --out-dir work\phase34_multiseed --graph-dir outputs\phase34_multiseed
+```
+
+評価条件:
+
+- 評価seed列: `6000`〜`6019`
+- 各モデル20エピソード
+- 最大1000 step
+- `deterministic=True`
+- VecNormalizeは保存済み統計を読み込み、`training=False`、`norm_reward=False`
+- 20エピソードは各モデルの評価反復であり、20回の独立した学習実験としては扱いません。
+
+seedごとの評価平均:
+
+| 学習seed | 平均生存step | 転倒率 | 安定歩行成功率 | 歩行候補率 | 前進距離 | 前進速度 | 左右移動量 | 胴体姿勢 | 胴体高さstd | 接地切替回数 | 推定周期step | 足滑り速度 | action飽和率 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4242 | 83.30 | 100% | 0% | 85% | 0.751 | 0.427 | 0.244 | 0.972 | 0.076 | 4.70 | 29.68 | 0.153 | 50.7% |
+| 5252 | 85.05 | 100% | 0% | 0% | 0.778 | 0.412 | 0.410 | 0.955 | 0.079 | 1.60 | 4.75 | 0.118 | 39.4% |
+| 6262 | 82.20 | 100% | 0% | 70% | 0.860 | 0.506 | 0.072 | 0.939 | 0.077 | 3.15 | 28.99 | 0.262 | 49.4% |
+
+3モデル間の集約:
+
+| 指標 | 平均 | 標準偏差 | 最小 | 最大 |
+| --- | ---: | ---: | ---: | ---: |
+| 平均生存step | 83.52 | 1.17 | 82.20 | 85.05 |
+| 転倒率 | 100% | 0% | 100% | 100% |
+| 安定歩行成功率 | 0% | 0% | 0% | 0% |
+| 歩行候補率 | 51.7% | 37.0% | 0% | 85.0% |
+| 前進距離 | 0.796 | 0.046 | 0.751 | 0.860 |
+| 前進速度 | 0.449 | 0.041 | 0.412 | 0.506 |
+| 左右移動量 | 0.242 | 0.138 | 0.072 | 0.410 |
+| 胴体姿勢 | 0.955 | 0.013 | 0.939 | 0.972 |
+| 接地切替回数 | 3.15 | 1.27 | 1.60 | 4.70 |
+| 足滑り速度 | 0.178 | 0.061 | 0.118 | 0.262 |
+| action飽和率 | 46.5% | 5.0% | 39.4% | 50.7% |
+
+出力:
+
+```text
+work\phase34_multiseed\phase34_seed4242_step_log.csv
+work\phase34_multiseed\phase34_seed5252_step_log.csv
+work\phase34_multiseed\phase34_seed6262_step_log.csv
+work\phase34_multiseed\phase34_episode_summary_all.csv
+work\phase34_multiseed\phase34_seed_summary.csv
+work\phase34_multiseed\phase34_model_metric_stats.csv
+work\phase34_multiseed\phase34_multiseed_analysis.json
+outputs\phase34_multiseed\phase34_seed4242_contact_timeline.svg
+outputs\phase34_multiseed\phase34_seed5252_contact_timeline.svg
+outputs\phase34_multiseed\phase34_seed6262_contact_timeline.svg
+outputs\phase34_multiseed\phase34_multiseed_metric_bars.svg
+outputs\phase34_multiseed\phase34_seed4242_seed6000.gif
+outputs\phase34_multiseed\phase34_seed5252_seed6000.gif
+outputs\phase34_multiseed\phase34_seed6262_seed6000.gif
+```
+
+3D再生コマンド:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe play.py --agent model --model checkpoints\phase32_A_current_100k\phase32_A_current_100k_seed4242_latest.zip --vec-normalize-stats checkpoints\phase32_A_current_100k\phase32_A_current_100k_seed4242_vecnormalize.pkl --curriculum-config configs\phase31_stage1_A_current.json --curriculum-stage stage1 --render-mode human --episodes 1 --max-steps 1000 --seed 6000 --deterministic --device cpu --sleep 0.005
+
+.\.venv_phase1\Scripts\python.exe play.py --agent model --model checkpoints\phase34_A_seed5252_100k\phase34_A_seed5252_100k_latest.zip --vec-normalize-stats checkpoints\phase34_A_seed5252_100k\phase34_A_seed5252_100k_vecnormalize.pkl --curriculum-config configs\phase31_stage1_A_current.json --curriculum-stage stage1 --render-mode human --episodes 1 --max-steps 1000 --seed 6000 --deterministic --device cpu --sleep 0.005
+
+.\.venv_phase1\Scripts\python.exe play.py --agent model --model checkpoints\phase34_A_seed6262_100k\phase34_A_seed6262_100k_latest.zip --vec-normalize-stats checkpoints\phase34_A_seed6262_100k\phase34_A_seed6262_100k_vecnormalize.pkl --curriculum-config configs\phase31_stage1_A_current.json --curriculum-stage stage1 --render-mode human --episodes 1 --max-steps 1000 --seed 6000 --deterministic --device cpu --sleep 0.005
+```
+
+テスト:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe -m py_compile analyze_phase34_multiseed.py analyze_phase33_walk.py
+.\.venv_phase1\Scripts\python.exe tests\test_phase33_walk_metrics.py
+.\.venv_phase1\Scripts\python.exe tests\test_phase34_multiseed_stats.py
+```
+
+結果:
+
+```text
+phase33_walk_metric_tests_done=true
+phase34_multiseed_stats_tests_done=true
+```
+
+解釈:
+
+- 3モデルとも100,000 step級では転倒率100%、安定歩行成功率0%で、安定歩行は未達です。
+- 平均生存stepは3seedで`82.20`〜`85.05`に収まり、短期生存時間はかなり近い結果でした。
+- 前進距離と前進速度はseed間で大きく崩れていませんが、左右移動量、接地切替、歩行候補率には大きな差があります。
+- seed `5252`は前進距離は出ていますが、左右移動量が大きく、接地切替が少ないため歩行候補率0%でした。
+- seed `6262`は前進距離と左右移動量は良い一方、足滑りが最も大きく、胴体姿勢の平均が最も低いです。
+- seed `4242`は歩行候補率が最も高いですが、全エピソードで転倒し、安定成功には届いていません。
+- A設定は「短時間だけ前進する傾向」は複数seedで見られますが、「安定した二足歩行」は再現していません。次はAを基準に、胴体高さ低下、接地中の足滑り、制御入力の急変を抑える報酬・カリキュラム改善を検討します。
