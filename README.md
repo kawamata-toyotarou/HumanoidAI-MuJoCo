@@ -2292,3 +2292,167 @@ smoke test:
 - `candidate`はPhase 3系やbaselineより前進距離と歩行らしさが改善しており、継続学習候補として有望です。
 - 1.0Mから1.1Mでは平均指標が一部悪化しているため、最新モデルだけでなくcheckpointごとの評価でベストモデルを選ぶ必要があります。
 - 次の学習では100kごとに評価し、生存step、前進距離、横流れ、胴体姿勢、転倒率を同時に確認します。
+
+## Phase 4追加実験: 学習率比較
+
+目的は、`candidate` 2.1Mモデルから継続学習するときに、学習率を下げることで歩行安定性が改善するか検証することです。標準`Humanoid-v5`、PPO + VecNormalize、Candidateプリセット、seed、環境数、評価seedは固定し、学習率だけを比較します。
+
+追加実装:
+
+- `train_phase4.py`に`--learning-rate`を追加しました。
+- `--resume`時もSB3 PPOの`lr_schedule`とoptimizerのparam groupへ指定学習率を反映します。
+- metadataに`learning_rate_preset`、`learning_rate_effective`、`learning_rate_override`、`optimizer_learning_rates`を保存します。
+- 元モデル、optimizer状態、VecNormalize統計、累計stepは引き継ぎます。
+
+確認済みsmoke test:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe train_phase4.py --preset candidate --total-timesteps 1024 --seed 4242 --n-envs 4 --device cpu --checkpoint-dir work\phase4_lr_override_smoke --run-name phase4_lr_override_smoke --resume checkpoints\phase4_candidate_2100k_seed4242\phase4_candidate_2100k_seed4242_latest.zip --vec-normalize-stats checkpoints\phase4_candidate_2100k_seed4242\phase4_candidate_2100k_seed4242_latest_vecnormalize.pkl --save-freq 1024 --torch-threads 10 --learning-rate 5e-5
+```
+
+確認結果:
+
+```text
+learning_rate_preset=0.0001
+learning_rate_effective=5e-05
+optimizer_learning_rates=[5e-05]
+model_start_num_timesteps=2109440
+model_num_timesteps=2113536
+trained_this_run=4096
+```
+
+### A: learning_rate=1e-4で追加100k
+
+Candidate 2.1Mから、元のcandidate学習率`1e-4`で追加100k学習します。
+
+```powershell
+.\.venv_phase1\Scripts\python.exe train_phase4.py --preset candidate --total-timesteps 100000 --seed 4242 --n-envs 4 --device cpu --checkpoint-dir checkpoints\phase4_candidate_2200k_lr1e-4_seed4242 --run-name phase4_candidate_2200k_lr1e-4_seed4242 --resume checkpoints\phase4_candidate_2100k_seed4242\phase4_candidate_2100k_seed4242_latest.zip --vec-normalize-stats checkpoints\phase4_candidate_2100k_seed4242\phase4_candidate_2100k_seed4242_latest_vecnormalize.pkl --save-freq 50000 --torch-threads 10 --learning-rate 1e-4
+```
+
+評価:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe evaluate_phase4.py --model checkpoints\phase4_candidate_2200k_lr1e-4_seed4242\phase4_candidate_2200k_lr1e-4_seed4242_latest.zip --vec-normalize-stats checkpoints\phase4_candidate_2200k_lr1e-4_seed4242\phase4_candidate_2200k_lr1e-4_seed4242_latest_vecnormalize.pkl --episodes 20 --seed 6000 --device cpu --out-dir work\phase4_eval_candidate_2200k_lr1e-4 --run-name phase4_eval_candidate_2200k_lr1e-4
+```
+
+### B: learning_rate=5e-5で追加100k
+
+Candidate 2.1Mから、学習率だけ`5e-5`へ下げて追加100k学習します。
+
+```powershell
+.\.venv_phase1\Scripts\python.exe train_phase4.py --preset candidate --total-timesteps 100000 --seed 4242 --n-envs 4 --device cpu --checkpoint-dir checkpoints\phase4_candidate_2200k_lr5e-5_seed4242 --run-name phase4_candidate_2200k_lr5e-5_seed4242 --resume checkpoints\phase4_candidate_2100k_seed4242\phase4_candidate_2100k_seed4242_latest.zip --vec-normalize-stats checkpoints\phase4_candidate_2100k_seed4242\phase4_candidate_2100k_seed4242_latest_vecnormalize.pkl --save-freq 50000 --torch-threads 10 --learning-rate 5e-5
+```
+
+評価:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe evaluate_phase4.py --model checkpoints\phase4_candidate_2200k_lr5e-5_seed4242\phase4_candidate_2200k_lr5e-5_seed4242_latest.zip --vec-normalize-stats checkpoints\phase4_candidate_2200k_lr5e-5_seed4242\phase4_candidate_2200k_lr5e-5_seed4242_latest_vecnormalize.pkl --episodes 20 --seed 6000 --device cpu --out-dir work\phase4_eval_candidate_2200k_lr5e-5 --run-name phase4_eval_candidate_2200k_lr5e-5
+```
+
+### 比較する指標
+
+報酬総量だけで判断せず、次の共通物理指標を優先します。
+
+- 平均生存step
+- 転倒率
+- 前進距離
+- 前進速度
+- 横流れ
+- 胴体姿勢
+- 足滑り
+- action飽和率
+- walk_candidate率
+- stable_walk_success率
+
+TensorBoardでは次を比較します。
+
+- `train/approx_kl`
+- `train/clip_fraction`
+- `train/std`
+- `rollout/ep_len_mean`
+- `rollout/ep_rew_mean`
+
+TensorBoard起動:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe -m tensorboard.main --logdir runs\tensorboard --host 127.0.0.1 --port 6006
+```
+
+ブラウザ:
+
+```text
+http://127.0.0.1:6006/
+```
+
+注意:
+
+- A/Bはどちらも同じCandidate 2.1M checkpointから開始します。
+- 元の2.1MモデルとVecNormalize統計は上書きしません。
+- 学習率以外のPPO設定はcandidateプリセットのまま固定します。
+- `checkpoints/`、`runs/`、`work/`はGitHubへpushしません。
+
+### Phase 4 現時点ベスト候補: candidate 2.9M
+
+`candidate` 2.4Mから`learning_rate=2.5e-5`で追加約500k学習したところ、初めて20エピソード評価で転倒率が100%を下回りました。checkpoint本体、VecNormalize統計、TensorBoardログはローカル保存のみで、GitHubには含めません。
+
+保存先:
+
+```text
+checkpoints\phase4_candidate_2900k_lr2.5e-5_seed4242
+```
+
+学習結果:
+
+```text
+trained_timesteps=2920448
+trained_this_run=503808
+elapsed_seconds=847.138
+steps_per_second=594.718
+learning_rate=2.5e-5
+approx_kl=0.013825347
+clip_fraction=0.141
+rollout/ep_len_mean=372
+rollout/ep_rew_mean=2.23e+03
+```
+
+評価結果:
+
+| 指標 | 2400k lr2.5e-5 | 2900k lr2.5e-5 | 判定 |
+| --- | ---: | ---: | --- |
+| 平均生存step | 434.45 | 821.65 | 大幅改善 |
+| 転倒率 | 100% | 55% | 大幅改善 |
+| truncated率 | 0% | 45% | 1000step完走が出現 |
+| 前進距離 | 8.227 | 15.564 | 大幅改善 |
+| 前進速度 | 1.205 | 1.213 | 維持 |
+| 横流れ | 2.270 | 1.937 | 改善 |
+| 胴体高さ変動 | 0.0478 | 0.0288 | 改善 |
+| 胴体高さ低下 | 0.190 | 0.105 | 改善 |
+| 胴体姿勢 | 0.961 | 0.966 | 改善 |
+| 接地切替 | 45.85 | 106.75 | 大幅増加 |
+| action飽和率 | 84.15% | 85.53% | 少し悪化 |
+| 安定歩行成功率 | 0% | 0% | 評価上は未達 |
+
+解釈:
+
+- `phase4_candidate_2900k_lr2.5e-5_seed4242`は現時点の明確なベスト候補です。
+- 20エピソード中45%が最大1000stepでtruncatedしており、標準Humanoid-v5報酬のまま歩行がかなり成立してきています。
+- ただしaction飽和率と足滑りは高く、安定歩行成功率はまだ0%です。
+- 次は同じ`learning_rate=2.5e-5`で追加200kを行い、改善が続くかを確認します。500k単位で進めるより、action飽和の悪化を見ながら刻む方針です。
+
+次の追加200k学習:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe train_phase4.py --preset candidate --total-timesteps 200000 --seed 4242 --n-envs 4 --device cpu --checkpoint-dir checkpoints\phase4_candidate_3100k_lr2.5e-5_seed4242 --run-name phase4_candidate_3100k_lr2.5e-5_seed4242 --resume checkpoints\phase4_candidate_2900k_lr2.5e-5_seed4242\phase4_candidate_2900k_lr2.5e-5_seed4242_latest.zip --vec-normalize-stats checkpoints\phase4_candidate_2900k_lr2.5e-5_seed4242\phase4_candidate_2900k_lr2.5e-5_seed4242_latest_vecnormalize.pkl --save-freq 100000 --torch-threads 10 --learning-rate 2.5e-5
+```
+
+評価:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe evaluate_phase4.py --model checkpoints\phase4_candidate_3100k_lr2.5e-5_seed4242\phase4_candidate_3100k_lr2.5e-5_seed4242_latest.zip --vec-normalize-stats checkpoints\phase4_candidate_3100k_lr2.5e-5_seed4242\phase4_candidate_3100k_lr2.5e-5_seed4242_latest_vecnormalize.pkl --episodes 20 --seed 6000 --device cpu --out-dir work\phase4_eval_candidate_3100k_lr2.5e-5 --run-name phase4_eval_candidate_3100k_lr2.5e-5
+```
+
+3D再生:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe play.py --agent model --model checkpoints\phase4_candidate_3100k_lr2.5e-5_seed4242\phase4_candidate_3100k_lr2.5e-5_seed4242_latest.zip --vec-normalize-stats checkpoints\phase4_candidate_3100k_lr2.5e-5_seed4242\phase4_candidate_3100k_lr2.5e-5_seed4242_latest_vecnormalize.pkl --render-mode human --episodes 5 --max-steps 1000 --seed 6000 --deterministic --device cpu --sleep 0.005
+```

@@ -17,7 +17,7 @@ import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.utils import set_random_seed
+from stable_baselines3.common.utils import FloatSchedule, set_random_seed
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 
 from train import choose_device
@@ -78,6 +78,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vec-normalize-stats", default=None, help="Matching VecNormalize .pkl for --resume.")
     parser.add_argument("--save-freq", type=int, default=100_000, help="Checkpoint frequency in env-step units.")
     parser.add_argument("--torch-threads", type=int, default=None)
+    parser.add_argument(
+        "--learning-rate",
+        type=float,
+        default=None,
+        help="Override preset learning rate. Useful for controlled resume experiments.",
+    )
     parser.add_argument("--log-dir", default="runs/tensorboard")
     parser.add_argument("--monitor-dir", default="runs/monitor_phase4")
     parser.add_argument("--clip-obs", type=float, default=10.0)
@@ -146,6 +152,22 @@ def metadata_path_for_model(model_path: Path) -> Path:
 
 def optimizer_state_entries(model: PPO) -> int:
     return len(model.policy.optimizer.state_dict().get("state", {}))
+
+
+def resolve_learning_rate(args: argparse.Namespace, preset: Phase4Preset) -> float:
+    return float(args.learning_rate) if args.learning_rate is not None else float(preset.learning_rate)
+
+
+def optimizer_learning_rates(model: PPO) -> list[float]:
+    return [float(group["lr"]) for group in model.policy.optimizer.param_groups]
+
+
+def apply_model_learning_rate(model: PPO, learning_rate: float) -> None:
+    """Update both SB3's schedule and the already-created optimizer param groups."""
+    model.learning_rate = float(learning_rate)
+    model.lr_schedule = FloatSchedule(float(learning_rate))
+    for group in model.policy.optimizer.param_groups:
+        group["lr"] = float(learning_rate)
 
 
 def policy_net_arch(model: PPO) -> list[int] | dict[str, Any] | None:
@@ -234,6 +256,10 @@ def build_metadata(
         "env_id": ENV_ID,
         "preset": preset.name,
         "preset_config": asdict(preset),
+        "learning_rate_preset": preset.learning_rate,
+        "learning_rate_effective": resolve_learning_rate(args, preset),
+        "learning_rate_override": args.learning_rate,
+        "optimizer_learning_rates": optimizer_learning_rates(model),
         "learning_rate_schedule": args.learning_rate_schedule,
         "learning_rate_schedule_note": "Only constant learning rates are used in the first comparison; schedule support is intentionally reserved.",
         "run_name": args.run_name,
@@ -369,6 +395,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--save-freq must be greater than 0")
     if args.torch_threads is not None and args.torch_threads <= 0:
         raise ValueError("--torch-threads must be greater than 0")
+    if args.learning_rate is not None and args.learning_rate <= 0:
+        raise ValueError("--learning-rate must be greater than 0")
     if args.resume and not args.vec_normalize_stats:
         raise ValueError("--vec-normalize-stats is required when using --resume")
     if args.vec_normalize_stats and not args.resume:
@@ -379,6 +407,7 @@ def main() -> None:
     args = parse_args()
     validate_args(args)
     preset = PRESETS[args.preset]
+    effective_learning_rate = resolve_learning_rate(args, preset)
     if args.torch_threads is not None:
         torch.set_num_threads(args.torch_threads)
 
@@ -412,6 +441,7 @@ def main() -> None:
                 device=device,
                 tensorboard_log=str(tensorboard_dir),
             )
+            apply_model_learning_rate(model, effective_learning_rate)
             reset_num_timesteps = False
             validate_model_against_env(model, env, preset)
         else:
@@ -425,7 +455,7 @@ def main() -> None:
                 n_steps=preset.n_steps,
                 batch_size=preset.batch_size,
                 n_epochs=preset.n_epochs,
-                learning_rate=preset.learning_rate,
+                learning_rate=effective_learning_rate,
                 ent_coef=preset.ent_coef,
                 gamma=preset.gamma,
                 gae_lambda=preset.gae_lambda,
@@ -440,6 +470,9 @@ def main() -> None:
         print(f"env_id={ENV_ID}")
         print(f"preset={preset.name}")
         print(f"preset_config={asdict(preset)}")
+        print(f"learning_rate_preset={preset.learning_rate}")
+        print(f"learning_rate_effective={effective_learning_rate}")
+        print(f"optimizer_learning_rates={optimizer_learning_rates(model)}")
         print(f"run_name={args.run_name}")
         print(f"total_timesteps_additional={args.total_timesteps}")
         print(f"seed={args.seed}")
