@@ -2456,3 +2456,65 @@ rollout/ep_rew_mean=2.23e+03
 ```powershell
 .\.venv_phase1\Scripts\python.exe play.py --agent model --model checkpoints\phase4_candidate_3100k_lr2.5e-5_seed4242\phase4_candidate_3100k_lr2.5e-5_seed4242_latest.zip --vec-normalize-stats checkpoints\phase4_candidate_3100k_lr2.5e-5_seed4242\phase4_candidate_3100k_lr2.5e-5_seed4242_latest_vecnormalize.pkl --render-mode human --episodes 5 --max-steps 1000 --seed 6000 --deterministic --device cpu --sleep 0.005
 ```
+
+### Phase 4 現時点ピーク: candidate 3.1M
+
+`candidate` 2.9Mから`learning_rate=2.5e-5`で追加約200k学習した`phase4_candidate_3100k_lr2.5e-5_seed4242`が、現時点のベスト候補です。さらに同条件で3.2Mまで進めたところ一部指標が悪化したため、3.1Mをピークとして記録します。checkpoint本体、VecNormalize統計、TensorBoardログはローカル保存のみで、GitHubには含めません。
+
+ベスト候補:
+
+```text
+checkpoints\phase4_candidate_3100k_lr2.5e-5_seed4242
+```
+
+3100k学習結果:
+
+```text
+trained_timesteps=3121152
+trained_this_run=200704
+elapsed_seconds=307.737
+steps_per_second=652.193
+learning_rate=2.5e-5
+approx_kl=0.0142312795
+clip_fraction=0.139
+rollout/ep_len_mean=453
+rollout/ep_rew_mean=2.74e+03
+```
+
+3100k評価結果:
+
+| 指標 | 2900k | 3100k | 3200k | 現時点判断 |
+| --- | ---: | ---: | ---: | --- |
+| 平均生存step | 821.65 | 955.05 | 870.60 | 3100kが最良 |
+| 転倒率 | 55% | 15% | 20% | 3100kが最良 |
+| 1000step完走率 | 45% | 85% | 80% | 3100kが最良 |
+| 前進距離 | 15.564 | 18.219 | 15.893 | 3100kが最良 |
+| 前進速度 | 1.213 | 1.273 | 1.158 | 3100kが最良 |
+| 横流れ | 1.937 | 2.206 | 1.658 | 3200kが良い |
+| 胴体高さ変動 | 0.0288 | 0.0192 | 0.0210 | 3100kが最良 |
+| 胴体高さ低下 | 0.105 | 0.0287 | 0.0449 | 3100kが最良 |
+| 胴体姿勢 | 0.966 | 0.974 | 0.972 | 3100kが最良 |
+| 足滑り | 0.786 | 0.845 | 0.782 | 3200kが良い |
+| action飽和率 | 85.53% | 86.03% | 86.06% | ほぼ同等 |
+
+3D再生では、3100kモデルは5エピソード中3エピソードが最大1000stepまで完走しました。
+
+```text
+episode=1 length=1000 terminated=False truncated=True
+episode=2 length=306 terminated=True truncated=False
+episode=3 length=566 terminated=True truncated=False
+episode=4 length=1000 terminated=False truncated=True
+episode=5 length=1000 terminated=False truncated=True
+```
+
+解釈:
+
+- 3100kは標準Humanoid-v5報酬のまま、20エピソード評価で85%が1000step完走した最初の明確なピークです。
+- 3200kは横流れと足滑りは改善しましたが、生存step、完走率、前進距離、前進速度が悪化したため、ベスト更新とは判定しません。
+- 次に改善する場合は、3100kから再開し、`learning_rate=1e-5`などさらに低い学習率で微調整する方針が有力です。
+
+3100k 3D再生:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe play.py --agent model --model checkpoints\phase4_candidate_3100k_lr2.5e-5_seed4242\phase4_candidate_3100k_lr2.5e-5_seed4242_latest.zip --vec-normalize-stats checkpoints\phase4_candidate_3100k_lr2.5e-5_seed4242\phase4_candidate_3100k_lr2.5e-5_seed4242_latest_vecnormalize.pkl --render-mode human --episodes 5 --max-steps 1000 --seed 6000 --deterministic --device cpu --sleep 0.005
+```
