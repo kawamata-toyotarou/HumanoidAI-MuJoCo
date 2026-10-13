@@ -2292,3 +2292,101 @@ smoke test:
 - `candidate`はPhase 3系やbaselineより前進距離と歩行らしさが改善しており、継続学習候補として有望です。
 - 1.0Mから1.1Mでは平均指標が一部悪化しているため、最新モデルだけでなくcheckpointごとの評価でベストモデルを選ぶ必要があります。
 - 次の学習では100kごとに評価し、生存step、前進距離、横流れ、胴体姿勢、転倒率を同時に確認します。
+
+## Phase 4追加実験: 学習率比較
+
+目的は、`candidate` 2.1Mモデルから継続学習するときに、学習率を下げることで歩行安定性が改善するか検証することです。標準`Humanoid-v5`、PPO + VecNormalize、Candidateプリセット、seed、環境数、評価seedは固定し、学習率だけを比較します。
+
+追加実装:
+
+- `train_phase4.py`に`--learning-rate`を追加しました。
+- `--resume`時もSB3 PPOの`lr_schedule`とoptimizerのparam groupへ指定学習率を反映します。
+- metadataに`learning_rate_preset`、`learning_rate_effective`、`learning_rate_override`、`optimizer_learning_rates`を保存します。
+- 元モデル、optimizer状態、VecNormalize統計、累計stepは引き継ぎます。
+
+確認済みsmoke test:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe train_phase4.py --preset candidate --total-timesteps 1024 --seed 4242 --n-envs 4 --device cpu --checkpoint-dir work\phase4_lr_override_smoke --run-name phase4_lr_override_smoke --resume checkpoints\phase4_candidate_2100k_seed4242\phase4_candidate_2100k_seed4242_latest.zip --vec-normalize-stats checkpoints\phase4_candidate_2100k_seed4242\phase4_candidate_2100k_seed4242_latest_vecnormalize.pkl --save-freq 1024 --torch-threads 10 --learning-rate 5e-5
+```
+
+確認結果:
+
+```text
+learning_rate_preset=0.0001
+learning_rate_effective=5e-05
+optimizer_learning_rates=[5e-05]
+model_start_num_timesteps=2109440
+model_num_timesteps=2113536
+trained_this_run=4096
+```
+
+### A: learning_rate=1e-4で追加100k
+
+Candidate 2.1Mから、元のcandidate学習率`1e-4`で追加100k学習します。
+
+```powershell
+.\.venv_phase1\Scripts\python.exe train_phase4.py --preset candidate --total-timesteps 100000 --seed 4242 --n-envs 4 --device cpu --checkpoint-dir checkpoints\phase4_candidate_2200k_lr1e-4_seed4242 --run-name phase4_candidate_2200k_lr1e-4_seed4242 --resume checkpoints\phase4_candidate_2100k_seed4242\phase4_candidate_2100k_seed4242_latest.zip --vec-normalize-stats checkpoints\phase4_candidate_2100k_seed4242\phase4_candidate_2100k_seed4242_latest_vecnormalize.pkl --save-freq 50000 --torch-threads 10 --learning-rate 1e-4
+```
+
+評価:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe evaluate_phase4.py --model checkpoints\phase4_candidate_2200k_lr1e-4_seed4242\phase4_candidate_2200k_lr1e-4_seed4242_latest.zip --vec-normalize-stats checkpoints\phase4_candidate_2200k_lr1e-4_seed4242\phase4_candidate_2200k_lr1e-4_seed4242_latest_vecnormalize.pkl --episodes 20 --seed 6000 --device cpu --out-dir work\phase4_eval_candidate_2200k_lr1e-4 --run-name phase4_eval_candidate_2200k_lr1e-4
+```
+
+### B: learning_rate=5e-5で追加100k
+
+Candidate 2.1Mから、学習率だけ`5e-5`へ下げて追加100k学習します。
+
+```powershell
+.\.venv_phase1\Scripts\python.exe train_phase4.py --preset candidate --total-timesteps 100000 --seed 4242 --n-envs 4 --device cpu --checkpoint-dir checkpoints\phase4_candidate_2200k_lr5e-5_seed4242 --run-name phase4_candidate_2200k_lr5e-5_seed4242 --resume checkpoints\phase4_candidate_2100k_seed4242\phase4_candidate_2100k_seed4242_latest.zip --vec-normalize-stats checkpoints\phase4_candidate_2100k_seed4242\phase4_candidate_2100k_seed4242_latest_vecnormalize.pkl --save-freq 50000 --torch-threads 10 --learning-rate 5e-5
+```
+
+評価:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe evaluate_phase4.py --model checkpoints\phase4_candidate_2200k_lr5e-5_seed4242\phase4_candidate_2200k_lr5e-5_seed4242_latest.zip --vec-normalize-stats checkpoints\phase4_candidate_2200k_lr5e-5_seed4242\phase4_candidate_2200k_lr5e-5_seed4242_latest_vecnormalize.pkl --episodes 20 --seed 6000 --device cpu --out-dir work\phase4_eval_candidate_2200k_lr5e-5 --run-name phase4_eval_candidate_2200k_lr5e-5
+```
+
+### 比較する指標
+
+報酬総量だけで判断せず、次の共通物理指標を優先します。
+
+- 平均生存step
+- 転倒率
+- 前進距離
+- 前進速度
+- 横流れ
+- 胴体姿勢
+- 足滑り
+- action飽和率
+- walk_candidate率
+- stable_walk_success率
+
+TensorBoardでは次を比較します。
+
+- `train/approx_kl`
+- `train/clip_fraction`
+- `train/std`
+- `rollout/ep_len_mean`
+- `rollout/ep_rew_mean`
+
+TensorBoard起動:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe -m tensorboard.main --logdir runs\tensorboard --host 127.0.0.1 --port 6006
+```
+
+ブラウザ:
+
+```text
+http://127.0.0.1:6006/
+```
+
+注意:
+
+- A/Bはどちらも同じCandidate 2.1M checkpointから開始します。
+- 元の2.1MモデルとVecNormalize統計は上書きしません。
+- 学習率以外のPPO設定はcandidateプリセットのまま固定します。
+- `checkpoints/`、`runs/`、`work/`はGitHubへpushしません。
