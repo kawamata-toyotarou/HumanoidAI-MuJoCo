@@ -1473,3 +1473,822 @@ outputs\phase32_C_slow_stability_100k_seed6000.gif
 - 次に進むなら、Aをベースに「速度を落としすぎず、転倒直前の高さ低下と片足偏りを抑える」方向で、転倒ペナルティー単独ではなく接地バランスや胴体高さ維持を含む調整を優先するのがよさそうです。
 
 今回はA/B/C各100,000 stepまでで停止し、Stage 2・Stage 3および300,000 stepを超える追加学習は開始していません。
+
+## フェーズ3.3: 歩行成立を判定する解析機能
+
+フェーズ3.3では、新規学習は行わず、フェーズ3.2のA/B/Cモデルを同じseed列`6000`から20エピソード評価し、歩行らしい動きかどうかを物理指標で解析しました。接地切り替えだけを歩行と誤認しないよう、前進距離、左右移動量、足の接地中滑り、胴体姿勢、転倒有無を組み合わせて判定します。
+
+追加した解析スクリプト:
+
+```text
+analyze_phase33_walk.py
+summarize_phase32.py
+tests\test_phase33_walk_metrics.py
+```
+
+実行コマンド:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe analyze_phase33_walk.py --episodes 20 --max-steps 1000 --seed 6000 --device cpu
+```
+
+出力:
+
+```text
+work\phase33_walk\phase33_A_step_log.csv
+work\phase33_walk\phase33_B_step_log.csv
+work\phase33_walk\phase33_C_step_log.csv
+work\phase33_walk\phase33_episode_summary_all.csv
+work\phase33_walk\phase33_abc_walk_summary.csv
+work\phase33_walk\phase33_walk_analysis.json
+outputs\phase33_walk\phase33_A_contact_timeline.svg
+outputs\phase33_walk\phase33_B_contact_timeline.svg
+outputs\phase33_walk\phase33_C_contact_timeline.svg
+```
+
+主な追加指標:
+
+- 左右足の接地状態、両足接地、足以外の床接地
+- 左右単脚支持の切り替え回数
+- 推定歩行周期
+- 足位置と足速度
+- 接地中の足滑り速度
+- 胴体位置、速度、高さ、高さ変動、転倒直前20 stepの高さ低下
+- action/ctrlの飽和率
+- `walk_candidate`: 前進距離、接地切り替え、低い足滑り、低い横流れ、胴体姿勢を同時に満たした「歩行候補断片」
+- `stable_walk_success`: `walk_candidate`に加えて、転倒せず150 step以上生存した安定歩行成功判定
+
+結果:
+
+| 条件 | 平均生存step | 転倒率 | 歩行候補率 | 安定歩行成功率 | 前進距離 | 接地切替回数 | 推定周期step | 足滑り速度 | action飽和率 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| A | 83.30 | 100% | 85% | 0% | 0.751 | 4.70 | 29.68 | 0.153 | 50.7% |
+| B | 88.60 | 100% | 25% | 0% | 0.617 | 2.15 | 26.35 | 0.129 | 44.3% |
+| C | 98.45 | 100% | 10% | 0% | 0.042 | 3.20 | 42.75 | 0.077 | 61.1% |
+
+追加の安定性指標:
+
+| 条件 | 左右移動量 | 胴体高さ平均 | 胴体高さ標準偏差 | 転倒直前20 step高さ低下 | 胴体姿勢平均 | 最小胴体姿勢平均 | 最大関節速度平均 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| A | 0.244 | 1.247 | 0.076 | 0.250 | 0.972 | 0.892 | 18.411 |
+| B | 0.321 | 1.233 | 0.081 | 0.208 | 0.895 | 0.615 | 14.284 |
+| C | 0.425 | 1.257 | 0.063 | 0.257 | 0.961 | 0.784 | 24.300 |
+
+解釈:
+
+- Aは接地切り替え、前進距離、姿勢、横流れの組み合わせで最も歩行候補らしい断片が多く、次の改善の基準にする価値があります。
+- ただしAも全エピソードで転倒しており、`stable_walk_success`は0%です。歩行成功とは判断しません。
+- Bは転倒ペナルティー強化で生存stepはAより少し伸びましたが、胴体姿勢と横流れが悪化し、接地切り替えも減っています。
+- Cは生存stepが最長で足滑りが少ない一方、前進距離がほぼ消え、action飽和率と横流れが増えています。低速・姿勢重視が「前進しない粘り」へ寄った可能性があります。
+- 接地切り替えだけでは歩行判定に使えません。Cは切り替えがあっても前進距離が小さく、Aも候補断片はあるものの転倒するため、安定歩行未達です。
+
+次の研究計画:
+
+1. Aを基準として、複数seedで再現性を確認する。
+   - 推奨seed: `4242`, `5252`, `6262`
+   - A設定を各100,000 step学習し、今回と同じPhase 3.3指標で比較する。
+   - 推定時間: 1本約3.0〜3.3分、3本で約9〜10分、評価と解析を含めて約11〜13分。
+2. A派生の報酬改善案を作る。
+   - 胴体高さ維持: 転倒直前20 stepの高さ低下を早めに罰する。
+   - 接地安定性: 接地中の足滑りを弱く罰する。ただし左右交互接地そのものを直接報酬化しすぎない。
+   - 制御入力の滑らかさ: action/ctrl飽和率と急激な関節速度を抑えるペナルティを追加する。
+3. 報酬ハックを避ける方針。
+   - 左右交互接地だけを報酬にしない。
+   - 歩行候補判定には、前進距離、横流れ、足滑り、胴体姿勢、生存時間を必ず同時に使う。
+   - 総報酬ではなく、物理指標で比較する。
+4. 次回の比較学習案。
+   - A基準seed再現性3本: 約11〜13分。
+   - A派生3条件 x 3seed x 100,000 step: 学習だけで約27〜30分、評価込みで約32〜36分。
+
+今回は解析機能の実装と既存モデルの評価のみ実施しました。新規の長時間学習、Stage 2、Stage 3は開始していません。
+
+## フェーズ3.4: Stage 1 Aの複数seed再現性検証
+
+フェーズ3.4では、フェーズ3.3で有望だったStage 1報酬設定Aが、学習seedを変えても再現するかを確認しました。報酬設定は`configs\phase31_stage1_A_current.json`、`curriculum-stage=stage1`で固定し、PPO + VecNormalize、CPU実行、学習時の3D描画なしで実施しました。
+
+seed `4242`はフェーズ3.2の既存モデルを再利用し、再学習や上書きはしていません。新規学習は承認範囲のseed `5252`と`6262`のみ、それぞれ100,352 stepで停止しました。Stage 2・Stage 3は開始していません。
+
+追加した解析スクリプト:
+
+```text
+analyze_phase34_multiseed.py
+tests\test_phase34_multiseed_stats.py
+```
+
+新規学習コマンド:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe train_phase25.py --total-timesteps 100000 --seed 5252 --run-name phase34_A_seed5252_100k --checkpoint-dir checkpoints\phase34_A_seed5252_100k --final-name-prefix phase34_A_seed5252_100k --log-dir runs\tensorboard --save-freq 25000 --device cpu --vec-normalize --curriculum-config configs\phase31_stage1_A_current.json --curriculum-stage stage1
+
+.\.venv_phase1\Scripts\python.exe train_phase25.py --total-timesteps 100000 --seed 6262 --run-name phase34_A_seed6262_100k --checkpoint-dir checkpoints\phase34_A_seed6262_100k --final-name-prefix phase34_A_seed6262_100k --log-dir runs\tensorboard --save-freq 25000 --device cpu --vec-normalize --curriculum-config configs\phase31_stage1_A_current.json --curriculum-stage stage1
+```
+
+学習結果:
+
+| 学習seed | モデル | 学習step | 学習時間 | steps/sec | 備考 |
+| --- | --- | ---: | ---: | ---: | --- |
+| 4242 | `checkpoints\phase32_A_current_100k` | 100,352 | - | - | 既存モデルを再利用 |
+| 5252 | `checkpoints\phase34_A_seed5252_100k` | 100,352 | 264.871秒 | 378.871 | 新規学習 |
+| 6262 | `checkpoints\phase34_A_seed6262_100k` | 100,352 | 196.373秒 | 511.028 | 新規学習 |
+
+評価コマンド:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe analyze_phase34_multiseed.py --episodes 20 --max-steps 1000 --seed 6000 --device cpu --curriculum-stage stage1 --out-dir work\phase34_multiseed --graph-dir outputs\phase34_multiseed
+```
+
+評価条件:
+
+- 評価seed列: `6000`〜`6019`
+- 各モデル20エピソード
+- 最大1000 step
+- `deterministic=True`
+- VecNormalizeは保存済み統計を読み込み、`training=False`、`norm_reward=False`
+- 20エピソードは各モデルの評価反復であり、20回の独立した学習実験としては扱いません。
+
+seedごとの評価平均:
+
+| 学習seed | 平均生存step | 転倒率 | 安定歩行成功率 | 歩行候補率 | 前進距離 | 前進速度 | 左右移動量 | 胴体姿勢 | 胴体高さstd | 接地切替回数 | 推定周期step | 足滑り速度 | action飽和率 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4242 | 83.30 | 100% | 0% | 85% | 0.751 | 0.427 | 0.244 | 0.972 | 0.076 | 4.70 | 29.68 | 0.153 | 50.7% |
+| 5252 | 85.05 | 100% | 0% | 0% | 0.778 | 0.412 | 0.410 | 0.955 | 0.079 | 1.60 | 4.75 | 0.118 | 39.4% |
+| 6262 | 82.20 | 100% | 0% | 70% | 0.860 | 0.506 | 0.072 | 0.939 | 0.077 | 3.15 | 28.99 | 0.262 | 49.4% |
+
+3モデル間の集約:
+
+| 指標 | 平均 | 標準偏差 | 最小 | 最大 |
+| --- | ---: | ---: | ---: | ---: |
+| 平均生存step | 83.52 | 1.17 | 82.20 | 85.05 |
+| 転倒率 | 100% | 0% | 100% | 100% |
+| 安定歩行成功率 | 0% | 0% | 0% | 0% |
+| 歩行候補率 | 51.7% | 37.0% | 0% | 85.0% |
+| 前進距離 | 0.796 | 0.046 | 0.751 | 0.860 |
+| 前進速度 | 0.449 | 0.041 | 0.412 | 0.506 |
+| 左右移動量 | 0.242 | 0.138 | 0.072 | 0.410 |
+| 胴体姿勢 | 0.955 | 0.013 | 0.939 | 0.972 |
+| 接地切替回数 | 3.15 | 1.27 | 1.60 | 4.70 |
+| 足滑り速度 | 0.178 | 0.061 | 0.118 | 0.262 |
+| action飽和率 | 46.5% | 5.0% | 39.4% | 50.7% |
+
+出力:
+
+```text
+work\phase34_multiseed\phase34_seed4242_step_log.csv
+work\phase34_multiseed\phase34_seed5252_step_log.csv
+work\phase34_multiseed\phase34_seed6262_step_log.csv
+work\phase34_multiseed\phase34_episode_summary_all.csv
+work\phase34_multiseed\phase34_seed_summary.csv
+work\phase34_multiseed\phase34_model_metric_stats.csv
+work\phase34_multiseed\phase34_multiseed_analysis.json
+outputs\phase34_multiseed\phase34_seed4242_contact_timeline.svg
+outputs\phase34_multiseed\phase34_seed5252_contact_timeline.svg
+outputs\phase34_multiseed\phase34_seed6262_contact_timeline.svg
+outputs\phase34_multiseed\phase34_multiseed_metric_bars.svg
+outputs\phase34_multiseed\phase34_seed4242_seed6000.gif
+outputs\phase34_multiseed\phase34_seed5252_seed6000.gif
+outputs\phase34_multiseed\phase34_seed6262_seed6000.gif
+```
+
+3D再生コマンド:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe play.py --agent model --model checkpoints\phase32_A_current_100k\phase32_A_current_100k_seed4242_latest.zip --vec-normalize-stats checkpoints\phase32_A_current_100k\phase32_A_current_100k_seed4242_vecnormalize.pkl --curriculum-config configs\phase31_stage1_A_current.json --curriculum-stage stage1 --render-mode human --episodes 1 --max-steps 1000 --seed 6000 --deterministic --device cpu --sleep 0.005
+
+.\.venv_phase1\Scripts\python.exe play.py --agent model --model checkpoints\phase34_A_seed5252_100k\phase34_A_seed5252_100k_latest.zip --vec-normalize-stats checkpoints\phase34_A_seed5252_100k\phase34_A_seed5252_100k_vecnormalize.pkl --curriculum-config configs\phase31_stage1_A_current.json --curriculum-stage stage1 --render-mode human --episodes 1 --max-steps 1000 --seed 6000 --deterministic --device cpu --sleep 0.005
+
+.\.venv_phase1\Scripts\python.exe play.py --agent model --model checkpoints\phase34_A_seed6262_100k\phase34_A_seed6262_100k_latest.zip --vec-normalize-stats checkpoints\phase34_A_seed6262_100k\phase34_A_seed6262_100k_vecnormalize.pkl --curriculum-config configs\phase31_stage1_A_current.json --curriculum-stage stage1 --render-mode human --episodes 1 --max-steps 1000 --seed 6000 --deterministic --device cpu --sleep 0.005
+```
+
+テスト:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe -m py_compile analyze_phase34_multiseed.py analyze_phase33_walk.py
+.\.venv_phase1\Scripts\python.exe tests\test_phase33_walk_metrics.py
+.\.venv_phase1\Scripts\python.exe tests\test_phase34_multiseed_stats.py
+```
+
+結果:
+
+```text
+phase33_walk_metric_tests_done=true
+phase34_multiseed_stats_tests_done=true
+```
+
+解釈:
+
+- 3モデルとも100,000 step級では転倒率100%、安定歩行成功率0%で、安定歩行は未達です。
+- 平均生存stepは3seedで`82.20`〜`85.05`に収まり、短期生存時間はかなり近い結果でした。
+- 前進距離と前進速度はseed間で大きく崩れていませんが、左右移動量、接地切替、歩行候補率には大きな差があります。
+- seed `5252`は前進距離は出ていますが、左右移動量が大きく、接地切替が少ないため歩行候補率0%でした。
+- seed `6262`は前進距離と左右移動量は良い一方、足滑りが最も大きく、胴体姿勢の平均が最も低いです。
+- seed `4242`は歩行候補率が最も高いですが、全エピソードで転倒し、安定成功には届いていません。
+- A設定は「短時間だけ前進する傾向」は複数seedで見られますが、「安定した二足歩行」は再現していません。次はAを基準に、胴体高さ低下、接地中の足滑り、制御入力の急変を抑える報酬・カリキュラム改善を検討します。
+
+## フェーズ3.5: action滑らかさ報酬と制御変化解析
+
+フェーズ3.5では、急激な制御指令の変化が転倒や歩行不安定性に関係しているかを調べるため、Stage 1 Aを変更せず、派生設定としてaction差分ペナルティーを追加しました。今回は実装、既存モデルの再評価、1024 stepのsmoke testのみ実施し、100,000 step以上の本格比較学習は開始していません。
+
+追加・変更したファイル:
+
+```text
+humanoid_ai\phase3_curriculum_reward.py
+configs\phase35_stage1_action_smoothness.json
+analyze_phase35_action_smoothness.py
+tests\test_phase35_action_smoothness.py
+```
+
+報酬設計:
+
+```text
+action_delta = action_t - action_{t-1}
+初回step: action_{t-1} = 0
+episode reset時: action_{t-1}をリセット
+action_delta_sq_mean = mean(action_delta^2)
+phase3_penalty_action_smoothness = -action_smoothness_weight * action_delta_sq_mean
+```
+
+`action`はMuJoCo環境へ渡す実際の制御入力を使い、VecNormalizeの観測正規化とは独立して計測します。既存A設定は`action_smoothness_weight=0.0`のまま扱われ、挙動は変えません。
+
+比較する報酬設定:
+
+| 条件 | 設定ファイル | action_smoothness_weight | 目的 |
+| --- | --- | ---: | --- |
+| A | `configs\phase31_stage1_A_current.json` | 0.0 | 現行Stage 1基準 |
+| Smooth | `configs\phase35_stage1_action_smoothness.json` | 0.2 | actionの急変を弱く抑える |
+
+既存Aモデルのaction差分基準値:
+
+| 学習seed | action差分RMS平均 | p75 | p90 | 足滑り最大平均 | 足滑り-action差分相関 | 関節速度変化RMS | 関節加速度相当RMS |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4242 | 0.384 | 0.466 | 0.505 | 0.138 | -0.038 | 3.178 | 211.897 |
+| 5252 | 0.139 | 0.217 | 0.307 | 0.119 | 0.121 | 1.211 | 80.723 |
+| 6262 | 0.329 | 0.437 | 0.494 | 0.199 | 0.165 | 3.034 | 202.270 |
+
+重み候補:
+
+- `action_smoothness_weight=0.2`を採用しました。
+- この重みでは、p75 action差分に対する追加ペナルティーはseedごとに約`-0.009`〜`-0.043`/step、p90では約`-0.019`〜`-0.051`/stepです。
+- Stage 1の速度追従報酬や生存報酬に比べて小さく、強すぎて動作が止まる可能性を避けるための控えめな値です。
+- 効果はsmoke testだけでは判断しません。本格比較では、前進距離と生存時間が落ちすぎないかを必ず確認します。
+
+既存3モデルの再評価:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe analyze_phase35_action_smoothness.py --episodes 20 --max-steps 1000 --seed 6000 --device cpu --curriculum-stage stage1 --out-dir work\phase35_action_smoothness --graph-dir outputs\phase35_action_smoothness
+```
+
+再評価結果:
+
+| 学習seed | 平均生存step | 転倒率 | 歩行候補率 | 安定歩行成功率 | 前進距離 | 左右移動量 | action飽和率 | action差分RMS |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4242 | 83.30 | 100% | 85% | 0% | 0.751 | 0.244 | 50.7% | 0.384 |
+| 5252 | 85.05 | 100% | 0% | 0% | 0.778 | 0.410 | 39.4% | 0.139 |
+| 6262 | 82.20 | 100% | 70% | 0% | 0.860 | 0.072 | 49.4% | 0.331 |
+
+閾値感度:
+
+| 学習seed | base | strict slip | loose slip | strict lateral | loose lateral | strict upright |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4242 | 85% | 85% | 85% | 50% | 95% | 85% |
+| 5252 | 0% | 0% | 0% | 0% | 15% | 0% |
+| 6262 | 70% | 25% | 75% | 70% | 70% | 15% |
+
+解釈:
+
+- `walk_candidate`はseed 4242では主に左右移動量の閾値、seed 6262では足滑りと胴体姿勢の閾値に敏感でした。
+- seed 5252は横流れが大きく、横方向閾値を緩めても歩行候補率は15%までしか上がりませんでした。
+- 3モデルとも安定歩行成功率は0%で、閾値を少し動かしても安定歩行成功とは判定されません。
+- 足滑りとaction差分の相関は弱く、4242ではほぼ無相関、5252/6262では弱い正相関でした。action急変だけが不安定性の単独原因とはまだ言えません。
+
+smoke test:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe train_phase25.py --total-timesteps 1024 --seed 4242 --run-name phase35_smooth_smoke --checkpoint-dir work\phase35_smooth_smoke --final-name-prefix phase35_smooth_smoke --log-dir runs\tensorboard --save-freq 512 --device cpu --vec-normalize --curriculum-config configs\phase35_stage1_action_smoothness.json --curriculum-stage stage1
+
+.\.venv_phase1\Scripts\python.exe play.py --agent model --model work\phase35_smooth_smoke\phase35_smooth_smoke_latest.zip --vec-normalize-stats work\phase35_smooth_smoke\phase35_smooth_smoke_vecnormalize.pkl --curriculum-config configs\phase35_stage1_action_smoothness.json --curriculum-stage stage1 --render-mode none --episodes 1 --max-steps 32 --seed 6000 --deterministic --device cpu
+```
+
+結果:
+
+| 項目 | 結果 |
+| --- | ---: |
+| smoke test学習step | 1024 |
+| 学習時間 | 4.188秒 |
+| steps/sec | 244.519 |
+| 保存モデル | `work\phase35_smooth_smoke\phase35_smooth_smoke_latest.zip` |
+| VecNormalize統計 | `work\phase35_smooth_smoke\phase35_smooth_smoke_vecnormalize.pkl` |
+| 読み込み確認 | 32 step再生成功、terminated=False、truncated=False |
+
+TensorBoardには`phase3_penalty_action_smoothness`、`phase3_action_delta_sq_mean`、`phase3_action_delta_rms`が記録されました。1024 stepは動作確認であり、滑らかさ報酬の改善効果は判断していません。
+
+出力:
+
+```text
+work\phase35_action_smoothness\phase35_baseline_summary.csv
+work\phase35_action_smoothness\phase35_episode_summary_all.csv
+work\phase35_action_smoothness\phase35_action_delta_distribution.csv
+work\phase35_action_smoothness\phase35_threshold_sensitivity.csv
+work\phase35_action_smoothness\phase35_action_smoothness_analysis.json
+outputs\phase35_action_smoothness\phase35_slip_vs_action_delta.svg
+```
+
+本格比較実験の推定時間:
+
+| 実験案 | 推定時間 |
+| --- | ---: |
+| Smooth設定 x 3seed x 100,352 step | 約10〜14分 + 評価1〜2分 |
+| AとSmoothを両方新規学習 x 3seed | 約20〜28分 + 評価2〜4分 |
+
+次に進むなら、まずSmooth設定を`4242`, `5252`, `6262`の3seedで100,000 stepずつ学習し、既存Aの3seedと同じ評価指標で比較するのが最小の検証になります。
+
+## フェーズ3.6: action滑らかさペナルティーの3seed対照比較
+
+フェーズ3.6では、Stage 1 A設定と、action差分ペナルティーを加えたSmooth設定を、同じ3つの学習seedで比較しました。A条件はフェーズ3.4の既存モデルを再利用し、Smooth条件のみ新規モデルから学習しました。Stage 2、Stage 3、追加の長時間学習は開始していません。
+
+比較条件:
+
+| 条件 | 設定ファイル | action_smoothness_weight | 学習seed |
+| --- | --- | ---: | --- |
+| A | `configs\phase31_stage1_A_current.json` | 0.0 | 4242, 5252, 6262 |
+| Smooth | `configs\phase35_stage1_action_smoothness.json` | 0.2 | 4242, 5252, 6262 |
+
+共通条件:
+
+```text
+MuJoCo Humanoid-v5
+PPO + VecNormalize
+CPU実行
+学習中3D描画なし
+各モデル 100,352 step
+評価seed 6000〜6019
+評価20エピソード/model
+deterministic=True
+VecNormalize.training=False
+VecNormalize.norm_reward=False
+最大1000 step
+```
+
+速度ベンチマーク:
+
+| 項目 | 結果 |
+| --- | ---: |
+| ベンチマークstep | 5,120 |
+| 実測時間 | 22.231秒 |
+| 速度 | 230.310 steps/sec |
+| 100,352 step x 3本の推定 | 約21.8分 |
+
+Smooth条件の実測学習時間:
+
+| 学習seed | 学習step | 時間 | steps/sec |
+| ---: | ---: | ---: | ---: |
+| 4242 | 100,352 | 483.764秒 | 207.440 |
+| 5252 | 100,352 | 453.454秒 | 221.306 |
+| 6262 | 100,352 | 455.946秒 | 220.096 |
+
+TensorBoardでは、Smooth条件の学習中に`phase3_penalty_action_smoothness`、`phase3_action_delta_sq_mean`、`phase3_action_delta_rms`が記録され、action差分ペナルティーが学習中に実際に計算されていることを確認しました。
+
+評価結果:
+
+| 条件 | seed | 生存step | 転倒率 | 歩行候補率 | 安定歩行成功率 | 前進距離 | 前進速度 | 左右移動量 | 胴体姿勢 | 接地切替 | 足滑り平均 | action差分RMS | action飽和率 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| A | 4242 | 83.30 | 100% | 85% | 0% | 0.751 | 0.427 | 0.244 | 0.972 | 4.70 | 0.153 | 0.384 | 50.7% |
+| A | 5252 | 85.05 | 100% | 0% | 0% | 0.778 | 0.412 | 0.410 | 0.955 | 1.60 | 0.118 | 0.139 | 39.4% |
+| A | 6262 | 82.20 | 100% | 70% | 0% | 0.860 | 0.506 | 0.072 | 0.939 | 3.15 | 0.262 | 0.331 | 49.4% |
+| Smooth | 4242 | 66.90 | 100% | 15% | 0% | 0.659 | 0.478 | 0.236 | 0.885 | 2.75 | 0.281 | 0.264 | 40.4% |
+| Smooth | 5252 | 75.40 | 100% | 95% | 0% | 0.631 | 0.407 | 0.115 | 0.976 | 3.60 | 0.170 | 0.166 | 48.8% |
+| Smooth | 6262 | 68.80 | 100% | 0% | 0% | -0.026 | 0.019 | 0.497 | 0.963 | 1.05 | 0.141 | 0.126 | 36.2% |
+
+3seed平均:
+
+| 条件 | 生存step | 転倒率 | 歩行候補率 | 安定歩行成功率 | 前進距離 | 前進速度 | 左右移動量 | action差分RMS | action飽和率 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| A | 83.52 | 100% | 51.7% | 0% | 0.796 | 0.449 | 0.242 | 0.285 | 46.5% |
+| Smooth | 70.37 | 100% | 36.7% | 0% | 0.421 | 0.301 | 0.283 | 0.185 | 41.8% |
+
+AからSmoothへの同一seed差分:
+
+| 指標 | 改善seed数/3 | 平均差分 | 解釈 |
+| --- | ---: | ---: | --- |
+| 生存step | 0 | -13.15 | 全seedで悪化 |
+| 転倒率 | 0 | 0.00 | 全seedで100%のまま |
+| 安定歩行成功率 | 0 | 0.00 | 全seedで0%のまま |
+| 歩行候補率 | 1 | -15.0pt | seed 5252のみ改善 |
+| 前進距離 | 0 | -0.375 | 全seedで悪化 |
+| 前進速度 | 1 | -0.147 | seed 4242のみ改善 |
+| 左右移動量 | 2 | +0.041 | 2seedで改善したが、平均は悪化 |
+| 足滑り平均 | 1 | +0.019 | 1seedのみ改善 |
+| action差分RMS | 2 | -0.100 | 2seedで滑らかになった |
+| action飽和率 | 2 | -4.7pt | 2seedで低下 |
+
+解釈:
+
+- Smooth設定は、目的どおりaction差分RMSとaction飽和率を2/3 seedで下げました。
+- ただし、平均生存step、前進距離、前進速度、歩行候補率はAより悪化しました。
+- 特にseed 6262では、Smoothによりaction差分と足滑りは下がった一方で、前進距離が`-0.026`となり、前進能力がほぼ失われました。
+- seed 5252では歩行候補率と左右移動量、姿勢が改善しましたが、生存stepと前進距離は低下しました。
+- 3seedすべてで転倒率100%、安定歩行成功率0%のままであり、安定歩行は未達です。
+- actionを滑らかにすること自体は効いていますが、重み`0.2`をそのまま採用して改善とは判定できません。前進能力を失わずに滑らかさを入れるには、より弱い重み、スケジュール型の重み、または胴体高さ・転倒直前姿勢を優先する設計との組み合わせが必要です。
+
+出力:
+
+```text
+work\phase36_smoothness_comparison\phase36_model_summary.csv
+work\phase36_smoothness_comparison\phase36_episode_summary_all.csv
+work\phase36_smoothness_comparison\phase36_same_seed_deltas.csv
+work\phase36_smoothness_comparison\phase36_reward_condition_stats.csv
+work\phase36_smoothness_comparison\phase36_improvement_counts.csv
+work\phase36_smoothness_comparison\phase36_threshold_sensitivity.csv
+work\phase36_smoothness_comparison\phase36_smoothness_comparison.json
+outputs\phase36_smoothness_comparison\phase36_smooth_minus_A_deltas.svg
+outputs\phase36_smoothness_comparison\phase36_A_seed4242_seed6000.gif
+outputs\phase36_smoothness_comparison\phase36_A_seed5252_seed6000.gif
+outputs\phase36_smoothness_comparison\phase36_A_seed6262_seed6000.gif
+outputs\phase36_smoothness_comparison\phase36_Smooth_seed4242_seed6000.gif
+outputs\phase36_smoothness_comparison\phase36_Smooth_seed5252_seed6000.gif
+outputs\phase36_smoothness_comparison\phase36_Smooth_seed6262_seed6000.gif
+```
+
+Smoothモデルの3D再生コマンド:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe play.py --agent model --model checkpoints\phase36_smooth_seed4242_100k\phase36_smooth_seed4242_100k_latest.zip --vec-normalize-stats checkpoints\phase36_smooth_seed4242_100k\phase36_smooth_seed4242_100k_vecnormalize.pkl --curriculum-config configs\phase35_stage1_action_smoothness.json --curriculum-stage stage1 --render-mode human --episodes 1 --max-steps 1000 --seed 6000 --deterministic --device cpu --sleep 0.005
+
+.\.venv_phase1\Scripts\python.exe play.py --agent model --model checkpoints\phase36_smooth_seed5252_100k\phase36_smooth_seed5252_100k_latest.zip --vec-normalize-stats checkpoints\phase36_smooth_seed5252_100k\phase36_smooth_seed5252_100k_vecnormalize.pkl --curriculum-config configs\phase35_stage1_action_smoothness.json --curriculum-stage stage1 --render-mode human --episodes 1 --max-steps 1000 --seed 6000 --deterministic --device cpu --sleep 0.005
+
+.\.venv_phase1\Scripts\python.exe play.py --agent model --model checkpoints\phase36_smooth_seed6262_100k\phase36_smooth_seed6262_100k_latest.zip --vec-normalize-stats checkpoints\phase36_smooth_seed6262_100k\phase36_smooth_seed6262_100k_vecnormalize.pkl --curriculum-config configs\phase35_stage1_action_smoothness.json --curriculum-stage stage1 --render-mode human --episodes 1 --max-steps 1000 --seed 6000 --deterministic --device cpu --sleep 0.005
+```
+
+テスト:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe -m py_compile analyze_phase36_smoothness_comparison.py
+.\.venv_phase1\Scripts\python.exe tests\test_phase36_smoothness_comparison.py
+```
+
+結果:
+
+```text
+phase36_smoothness_comparison_tests_done=true
+```
+
+## フェーズ3.7: Stage 1 A seed4242の追加100k継続学習
+
+フェーズ3.7では、新しい報酬項を追加せず、Stage 1 A設定のまま追加学習で安定歩行が改善するかを確認しました。対象は`seed=4242`のA 100kモデルのみです。他seed、Smooth条件、Stage 2、Stage 3、200k以降の追加学習は実施していません。
+
+使用した元モデル:
+
+```text
+checkpoints\phase32_A_current_100k\phase32_A_current_100k_seed4242_latest.zip
+checkpoints\phase32_A_current_100k\phase32_A_current_100k_seed4242_vecnormalize.pkl
+configs\phase31_stage1_A_current.json
+curriculum-stage=stage1
+```
+
+再開確認:
+
+| 項目 | 結果 |
+| --- | ---: |
+| model_start_num_timesteps | 100,352 |
+| optimizer_state_entries | 13 |
+| VecNormalize.training | True |
+| VecNormalize.norm_reward | True |
+| 描画 | 無効 |
+
+独立ベンチマーク:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe train_phase25.py --total-timesteps 5000 --seed 4242 --run-name phase37_A4242_resume_benchmark_5k --checkpoint-dir work\phase37_A4242_resume_benchmark_5k --final-name-prefix phase37_A4242_resume_benchmark_5k --log-dir runs\tensorboard --save-freq 5000 --device cpu --vec-normalize --resume checkpoints\phase32_A_current_100k\phase32_A_current_100k_seed4242_latest.zip --vec-normalize-stats checkpoints\phase32_A_current_100k\phase32_A_current_100k_seed4242_vecnormalize.pkl --curriculum-config configs\phase31_stage1_A_current.json --curriculum-stage stage1
+```
+
+| 項目 | 結果 |
+| --- | ---: |
+| 追加step | 5,120 |
+| 到達step | 105,472 |
+| 時間 | 12.480秒 |
+| 速度 | 410.255 steps/sec |
+| 保存先 | `work\phase37_A4242_resume_benchmark_5k` |
+
+このベンチマークの学習stepは本実験に混入させていません。
+
+本実験:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe train_phase25.py --total-timesteps 100000 --seed 4242 --run-name phase37_A4242_resume_200k --checkpoint-dir checkpoints\phase37_A4242_resume_200k --final-name-prefix phase37_A4242_resume_200k --log-dir runs\tensorboard --save-freq 25000 --device cpu --vec-normalize --resume checkpoints\phase32_A_current_100k\phase32_A_current_100k_seed4242_latest.zip --vec-normalize-stats checkpoints\phase32_A_current_100k\phase32_A_current_100k_seed4242_vecnormalize.pkl --curriculum-config configs\phase31_stage1_A_current.json --curriculum-stage stage1
+```
+
+| 項目 | 結果 |
+| --- | ---: |
+| 開始step | 100,352 |
+| 追加step | 100,352 |
+| 到達step | 200,704 |
+| 実測時間 | 330.652秒 |
+| 速度 | 303.497 steps/sec |
+| 最終モデル | `checkpoints\phase37_A4242_resume_200k\phase37_A4242_resume_200k_latest.zip` |
+| 最終VecNormalize統計 | `checkpoints\phase37_A4242_resume_200k\phase37_A4242_resume_200k_vecnormalize.pkl` |
+
+中間checkpoint:
+
+```text
+checkpoints\phase37_A4242_resume_200k\phase37_A4242_resume_200k_ppo_125352_steps.zip
+checkpoints\phase37_A4242_resume_200k\phase37_A4242_resume_200k_ppo_150352_steps.zip
+checkpoints\phase37_A4242_resume_200k\phase37_A4242_resume_200k_ppo_175352_steps.zip
+checkpoints\phase37_A4242_resume_200k\phase37_A4242_resume_200k_ppo_200352_steps.zip
+```
+
+各中間モデルに対応するVecNormalize統計も同じフォルダに保存されました。
+
+評価条件:
+
+```text
+評価seed: 6000〜6019
+20エピソード/checkpoint
+deterministic=True
+VecNormalize.training=False
+VecNormalize.norm_reward=False
+最大1000 step
+```
+
+評価結果:
+
+| checkpoint | step | 生存step | 転倒率 | 歩行候補率 | 安定歩行成功率 | 前進距離 | 前進速度 | 横流れ | 胴体姿勢 | 接地切替 | 足滑り平均 | action差分RMS | action飽和率 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| A100k | 100,352 | 83.30 | 100% | 85% | 0% | 0.751 | 0.427 | 0.244 | 0.972 | 4.70 | 0.153 | 0.384 | 50.7% |
+| A125k | 125,352 | 99.00 | 100% | 75% | 0% | 0.590 | 0.324 | 0.290 | 0.981 | 8.55 | 0.174 | 0.398 | 59.6% |
+| A150k | 150,352 | 103.95 | 100% | 80% | 0% | 0.680 | 0.304 | 0.229 | 0.976 | 8.10 | 0.167 | 0.420 | 63.2% |
+| A175k | 175,352 | 107.80 | 100% | 70% | 0% | 0.586 | 0.291 | 0.231 | 0.976 | 6.60 | 0.172 | 0.447 | 61.3% |
+| A200k_mid | 200,352 | 103.35 | 100% | 60% | 0% | 0.549 | 0.288 | 0.294 | 0.971 | 2.45 | 0.117 | 0.449 | 64.3% |
+| A200k | 200,704 | 108.50 | 100% | 65% | 0% | 0.402 | 0.210 | 0.214 | 0.966 | 4.35 | 0.138 | 0.448 | 63.6% |
+
+100kから200kへの変化:
+
+| 指標 | 100k | 200k | 差分 | 判定 |
+| --- | ---: | ---: | ---: | --- |
+| 生存step | 83.30 | 108.50 | +25.20 | 改善 |
+| 転倒率 | 100% | 100% | 0pt | 未改善 |
+| 安定歩行成功率 | 0% | 0% | 0pt | 未改善 |
+| 歩行候補率 | 85% | 65% | -20pt | 悪化 |
+| 前進距離 | 0.751 | 0.402 | -0.348 | 悪化 |
+| 前進速度 | 0.427 | 0.210 | -0.218 | 悪化 |
+| 横流れ | 0.244 | 0.214 | -0.030 | 改善 |
+| 胴体高さ | 1.247 | 1.262 | +0.014 | 改善 |
+| 胴体高さ変動 | 0.076 | 0.069 | -0.008 | 改善 |
+| 胴体姿勢 | 0.972 | 0.966 | -0.006 | 悪化 |
+| 接地切替 | 4.70 | 4.35 | -0.35 | 悪化 |
+| 足滑り平均 | 0.153 | 0.138 | -0.015 | 改善 |
+| action差分RMS | 0.384 | 0.448 | +0.064 | 悪化 |
+| action飽和率 | 50.7% | 63.6% | +12.9pt | 悪化 |
+
+閾値感度:
+
+| checkpoint | base | strict lateral | loose lateral | strict slip | strict upright |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A100k | 85% | 50% | 95% | 85% | 85% |
+| A125k | 75% | 15% | 90% | 75% | 75% |
+| A150k | 80% | 70% | 90% | 80% | 80% |
+| A175k | 70% | 45% | 90% | 70% | 70% |
+| A200k_mid | 60% | 25% | 90% | 60% | 60% |
+| A200k | 65% | 55% | 70% | 65% | 65% |
+
+解釈:
+
+- 追加学習により平均生存stepは`83.30`から`108.50`へ伸びました。
+- しかし転倒率は100%のまま、安定歩行成功率も0%のままです。
+- 前進距離は`0.751`から`0.402`へ、平均前進速度は`0.427`から`0.210`へ大きく悪化しました。
+- 胴体高さ、胴体高さ変動、横流れ、足滑り平均は改善しましたが、action差分RMSとaction飽和率は悪化しました。
+- 中間checkpointでは150k付近まで歩行候補率80%を維持していますが、200kでは65%まで低下しました。
+- したがって、今回の追加学習は「より長く倒れにくくなる傾向」はありますが、「安定した前進歩行の改善」とは判定できません。以前見られた、生存時間だけ伸びて前進能力が落ちる現象が再発しています。
+- 次の改善では、単純な追加学習よりも、前進能力を保つ評価ゲート、action飽和抑制、またはStage 1内での早期停止/ベストcheckpoint選択を優先するべきです。今回の範囲では150k checkpointが200k最終よりバランスが良い候補です。
+
+出力:
+
+```text
+work\phase37_longer_baseline\phase37_checkpoint_summary.csv
+work\phase37_longer_baseline\phase37_episode_summary_all.csv
+work\phase37_longer_baseline\phase37_100k_to_200k_delta.csv
+work\phase37_longer_baseline\phase37_threshold_sensitivity.csv
+work\phase37_longer_baseline\phase37_longer_baseline.json
+outputs\phase37_longer_baseline\phase37_checkpoint_progress.svg
+outputs\phase37_longer_baseline\phase37_A100k_seed6000.gif
+outputs\phase37_longer_baseline\phase37_A200k_seed6000.gif
+```
+
+200kモデルの3D再生コマンド:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe play.py --agent model --model checkpoints\phase37_A4242_resume_200k\phase37_A4242_resume_200k_latest.zip --vec-normalize-stats checkpoints\phase37_A4242_resume_200k\phase37_A4242_resume_200k_vecnormalize.pkl --curriculum-config configs\phase31_stage1_A_current.json --curriculum-stage stage1 --render-mode human --episodes 1 --max-steps 1000 --seed 6000 --deterministic --device cpu --sleep 0.005
+```
+
+テスト:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe -m py_compile analyze_phase37_longer_baseline.py
+.\.venv_phase1\Scripts\python.exe tests\test_phase37_longer_baseline.py
+```
+
+結果:
+
+```text
+phase37_longer_baseline_tests_done=true
+```
+
+## フェーズ4: 標準Humanoid-v5 PPO基盤
+
+フェーズ4では、報酬関数の細かな調整をいったん停止し、Gymnasium標準の`Humanoid-v5`報酬をそのまま使う再現性重視の学習基盤を追加しました。参考実装として[ProfessorNova/PPO-Humanoid](https://github.com/ProfessorNova/PPO-Humanoid)を確認しましたが、このプロジェクトでは既存方針どおりStable-Baselines3のPPOを使用し、自作PPOには置き換えていません。
+
+追加ファイル:
+
+```text
+train_phase4.py
+evaluate_phase4.py
+tests\test_phase4_cli.py
+```
+
+### Phase 4の基本方針
+
+- 環境は`Humanoid-v5`標準報酬のみを使用します。
+- 学習は`PPO + VecNormalize`で行います。
+- `--total-timesteps`は新規学習時も再開時も「今回追加するstep数」です。
+- 再開時は`reset_num_timesteps=False`、`VecNormalize.training=True`、`norm_reward=True`で継続します。
+- 評価時は保存済みVecNormalize統計を読み込み、`training=False`、`norm_reward=False`にします。
+- 1環境では`DummyVecEnv`、2環境以上ではWindows対応の`SubprocVecEnv(spawn)`を使います。
+- checkpointごとにPPOモデル、VecNormalize統計、メタデータJSONをセットで保存します。
+- Ctrl+C中断時もinterrupt checkpointを保存します。
+
+### プリセット
+
+`baseline`:
+
+```text
+n_steps=512
+batch_size=64
+n_epochs=5
+learning_rate=3e-4
+net_arch=[64,64]
+gamma=0.99
+gae_lambda=0.95
+clip_range=0.2
+vf_coef=0.5
+max_grad_norm=0.5
+```
+
+`candidate`:
+
+```text
+n_steps=1024
+batch_size=256
+n_epochs=10
+learning_rate=1e-4
+ent_coef=0.01
+net_arch=[256,256]
+gamma=0.99
+gae_lambda=0.95
+clip_range=0.2
+vf_coef=0.5
+max_grad_norm=0.5
+```
+
+これらは比較用の初期設定であり、最適値ではありません。初回比較では条件を単純にするため固定学習率を使います。
+
+### A. baselineで新規100k学習
+
+```powershell
+.\.venv_phase1\Scripts\python.exe train_phase4.py --preset baseline --total-timesteps 100000 --seed 4242 --n-envs 4 --device cpu --checkpoint-dir checkpoints\phase4_baseline_100k_seed4242 --run-name phase4_baseline_100k_seed4242 --save-freq 25000 --torch-threads 10
+```
+
+### B. candidateで新規100k学習
+
+```powershell
+.\.venv_phase1\Scripts\python.exe train_phase4.py --preset candidate --total-timesteps 100000 --seed 4242 --n-envs 4 --device cpu --checkpoint-dir checkpoints\phase4_candidate_100k_seed4242 --run-name phase4_candidate_100k_seed4242 --save-freq 25000 --torch-threads 10
+```
+
+### C. 既存checkpointから追加200k学習
+
+```powershell
+.\.venv_phase1\Scripts\python.exe train_phase4.py --preset baseline --total-timesteps 200000 --seed 4242 --n-envs 4 --device cpu --checkpoint-dir checkpoints\phase4_baseline_resume_300k_seed4242 --run-name phase4_baseline_resume_300k_seed4242 --resume checkpoints\phase4_baseline_100k_seed4242\phase4_baseline_100k_seed4242_latest.zip --vec-normalize-stats checkpoints\phase4_baseline_100k_seed4242\phase4_baseline_100k_seed4242_latest_vecnormalize.pkl --save-freq 25000 --torch-threads 10
+```
+
+### D. 保存モデルの20エピソード評価
+
+```powershell
+.\.venv_phase1\Scripts\python.exe evaluate_phase4.py --model checkpoints\phase4_baseline_100k_seed4242\phase4_baseline_100k_seed4242_latest.zip --vec-normalize-stats checkpoints\phase4_baseline_100k_seed4242\phase4_baseline_100k_seed4242_latest_vecnormalize.pkl --episodes 20 --seed 6000 --device cpu --out-dir work\phase4_eval_baseline_100k --run-name phase4_eval_baseline_100k
+```
+
+評価出力:
+
+```text
+phase4_step_log.csv
+phase4_episode_summary.csv
+phase4_contact_timeline.svg
+phase4_summary.json
+```
+
+### E. 3D再生
+
+```powershell
+.\.venv_phase1\Scripts\python.exe play.py --agent model --model checkpoints\phase4_baseline_100k_seed4242\phase4_baseline_100k_seed4242_latest.zip --vec-normalize-stats checkpoints\phase4_baseline_100k_seed4242\phase4_baseline_100k_seed4242_latest_vecnormalize.pkl --render-mode human --episodes 1 --max-steps 1000 --seed 6000 --deterministic --device cpu --sleep 0.005
+```
+
+### F. TensorBoard確認
+
+```powershell
+.\.venv_phase1\Scripts\tensorboard.exe --logdir runs\tensorboard
+```
+
+ブラウザで表示:
+
+```text
+http://localhost:6006
+```
+
+### G. Ctrl+C中断と再開
+
+学習中にCtrl+Cを押すと、次のようなinterrupt checkpointを保存して終了します。
+
+```text
+<checkpoint-dir>\<run-name>_interrupt.zip
+<checkpoint-dir>\<run-name>_interrupt_vecnormalize.pkl
+<checkpoint-dir>\<run-name>_interrupt_metadata.json
+```
+
+再開例:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe train_phase4.py --preset baseline --total-timesteps 100000 --seed 4242 --n-envs 4 --device cpu --checkpoint-dir checkpoints\phase4_baseline_resume_after_interrupt --run-name phase4_baseline_resume_after_interrupt --resume checkpoints\phase4_baseline_100k_seed4242\phase4_baseline_100k_seed4242_interrupt.zip --vec-normalize-stats checkpoints\phase4_baseline_100k_seed4242\phase4_baseline_100k_seed4242_interrupt_vecnormalize.pkl --save-freq 25000 --torch-threads 10
+```
+
+### 短い動作確認
+
+実施した確認:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe -m py_compile train_phase4.py evaluate_phase4.py
+.\.venv_phase1\Scripts\python.exe train_phase4.py --help
+.\.venv_phase1\Scripts\python.exe evaluate_phase4.py --help
+.\.venv_phase1\Scripts\python.exe tests\test_phase4_cli.py
+```
+
+結果:
+
+```text
+phase4_cli_tests_done=true
+```
+
+smoke test:
+
+| 条件 | step | 実測時間 | 速度 |
+| --- | ---: | ---: | ---: |
+| baseline, n_envs=1 | 1,024 | 2.422秒 | 422.751 steps/sec |
+| candidate, n_envs=1 | 1,024 | 2.644秒 | 387.248 steps/sec |
+| baseline resume | 1,024追加 | 2.014秒 | 508.350 steps/sec |
+
+保存・再開確認:
+
+- baseline smokeは`work\phase4_smoke_baseline`へモデル、VecNormalize統計、metadataを保存しました。
+- resume smokeは`model_start_num_timesteps=1024`から開始し、`trained_timesteps=2048`で終了しました。
+- resume時の`optimizer_state_entries=13`を確認し、PPO optimizer状態が保存モデルから読み込まれていることを確認しました。
+- 評価時は`VecNormalize.training=False`、`VecNormalize.norm_reward=False`で実行できました。
+- `play.py --render-mode none`でPhase 4保存モデルとVecNormalize統計の読み込みを確認しました。
+
+### n_envsベンチマーク
+
+`baseline`で約5,000stepの短い速度計測を行いました。PPO rollout単位により実step数は指定値より少し増える場合があります。
+
+| n_envs | VecEnv | 実step | 実測時間 | 速度 |
+| ---: | --- | ---: | ---: | ---: |
+| 1 | DummyVecEnv | 5,120 | 10.900秒 | 469.732 steps/sec |
+| 2 | SubprocVecEnv | 5,120 | 12.323秒 | 415.482 steps/sec |
+| 4 | SubprocVecEnv | 6,144 | 9.503秒 | 646.518 steps/sec |
+
+短い計測では`n_envs=4`が最速でした。ただし長時間学習ではCPU温度やメモリ、プロセス間通信の影響で速度が変わる可能性があります。発熱や操作の重さが出る場合は`n_envs=1`または`2`に下げてください。
+
+`n_envs=4`、646.518 steps/secを基準にした概算:
+
+| step | 推定時間 |
+| ---: | ---: |
+| 100,000 | 約2.6分 |
+| 300,000 | 約7.7分 |
+| 1,000,000 | 約25.8分 |
+
+未確認・注意:
+
+- 今回は100,000step以上の本格学習は実行していません。
+- 3Dウィンドウ表示はPhase 4では未実行です。モデル読み込みは`render-mode none`で確認済みです。
+- WindowsのCIM権限の都合でRAM容量の自動取得は失敗しました。長時間学習時はタスクマネージャーでCPU温度、使用率、メモリを確認してください。
+- Python 3.14環境では`Failed to find real location...`警告が出ますが、今回のテストでは処理は正常終了しました。
+
+### Phase 4 candidate長時間学習メモ
+
+ユーザー側PowerShellで`candidate`プリセットの長時間学習を実施しました。checkpoint、VecNormalize統計、TensorBoardログはローカル保存のみで、GitHubには含めません。
+
+| モデル | 累計step | 平均生存step | 転倒率 | 前進距離 | 前進速度 | 横流れ | 胴体姿勢 | 安定歩行成功率 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| candidate 1.0M | 1,003,520 | 169.40 | 100% | 2.178 | 0.773 | 0.532 | 0.965 | 0% |
+| candidate 1.1M | 1,105,920 | 165.35 | 100% | 1.861 | 0.695 | 0.717 | 0.946 | 0% |
+
+3D再生では、candidate 1.1Mモデルで歩行らしい動きが見られました。評価seed 6000の1エピソード再生では`245 step`、`reward=1391.516`まで到達しました。ただし20エピソード評価では転倒率100%、安定歩行成功率0%のため、安定歩行はまだ未達です。
+
+現時点の判断:
+
+- `candidate`はPhase 3系やbaselineより前進距離と歩行らしさが改善しており、継続学習候補として有望です。
+- 1.0Mから1.1Mでは平均指標が一部悪化しているため、最新モデルだけでなくcheckpointごとの評価でベストモデルを選ぶ必要があります。
+- 次の学習では100kごとに評価し、生存step、前進距離、横流れ、胴体姿勢、転倒率を同時に確認します。
