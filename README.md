@@ -2090,3 +2090,188 @@ outputs\phase37_longer_baseline\phase37_A200k_seed6000.gif
 ```text
 phase37_longer_baseline_tests_done=true
 ```
+
+## フェーズ4: 標準Humanoid-v5 PPO基盤
+
+フェーズ4では、報酬関数の細かな調整をいったん停止し、Gymnasium標準の`Humanoid-v5`報酬をそのまま使う再現性重視の学習基盤を追加しました。参考実装として[ProfessorNova/PPO-Humanoid](https://github.com/ProfessorNova/PPO-Humanoid)を確認しましたが、このプロジェクトでは既存方針どおりStable-Baselines3のPPOを使用し、自作PPOには置き換えていません。
+
+追加ファイル:
+
+```text
+train_phase4.py
+evaluate_phase4.py
+tests\test_phase4_cli.py
+```
+
+### Phase 4の基本方針
+
+- 環境は`Humanoid-v5`標準報酬のみを使用します。
+- 学習は`PPO + VecNormalize`で行います。
+- `--total-timesteps`は新規学習時も再開時も「今回追加するstep数」です。
+- 再開時は`reset_num_timesteps=False`、`VecNormalize.training=True`、`norm_reward=True`で継続します。
+- 評価時は保存済みVecNormalize統計を読み込み、`training=False`、`norm_reward=False`にします。
+- 1環境では`DummyVecEnv`、2環境以上ではWindows対応の`SubprocVecEnv(spawn)`を使います。
+- checkpointごとにPPOモデル、VecNormalize統計、メタデータJSONをセットで保存します。
+- Ctrl+C中断時もinterrupt checkpointを保存します。
+
+### プリセット
+
+`baseline`:
+
+```text
+n_steps=512
+batch_size=64
+n_epochs=5
+learning_rate=3e-4
+net_arch=[64,64]
+gamma=0.99
+gae_lambda=0.95
+clip_range=0.2
+vf_coef=0.5
+max_grad_norm=0.5
+```
+
+`candidate`:
+
+```text
+n_steps=1024
+batch_size=256
+n_epochs=10
+learning_rate=1e-4
+ent_coef=0.01
+net_arch=[256,256]
+gamma=0.99
+gae_lambda=0.95
+clip_range=0.2
+vf_coef=0.5
+max_grad_norm=0.5
+```
+
+これらは比較用の初期設定であり、最適値ではありません。初回比較では条件を単純にするため固定学習率を使います。
+
+### A. baselineで新規100k学習
+
+```powershell
+.\.venv_phase1\Scripts\python.exe train_phase4.py --preset baseline --total-timesteps 100000 --seed 4242 --n-envs 4 --device cpu --checkpoint-dir checkpoints\phase4_baseline_100k_seed4242 --run-name phase4_baseline_100k_seed4242 --save-freq 25000 --torch-threads 10
+```
+
+### B. candidateで新規100k学習
+
+```powershell
+.\.venv_phase1\Scripts\python.exe train_phase4.py --preset candidate --total-timesteps 100000 --seed 4242 --n-envs 4 --device cpu --checkpoint-dir checkpoints\phase4_candidate_100k_seed4242 --run-name phase4_candidate_100k_seed4242 --save-freq 25000 --torch-threads 10
+```
+
+### C. 既存checkpointから追加200k学習
+
+```powershell
+.\.venv_phase1\Scripts\python.exe train_phase4.py --preset baseline --total-timesteps 200000 --seed 4242 --n-envs 4 --device cpu --checkpoint-dir checkpoints\phase4_baseline_resume_300k_seed4242 --run-name phase4_baseline_resume_300k_seed4242 --resume checkpoints\phase4_baseline_100k_seed4242\phase4_baseline_100k_seed4242_latest.zip --vec-normalize-stats checkpoints\phase4_baseline_100k_seed4242\phase4_baseline_100k_seed4242_latest_vecnormalize.pkl --save-freq 25000 --torch-threads 10
+```
+
+### D. 保存モデルの20エピソード評価
+
+```powershell
+.\.venv_phase1\Scripts\python.exe evaluate_phase4.py --model checkpoints\phase4_baseline_100k_seed4242\phase4_baseline_100k_seed4242_latest.zip --vec-normalize-stats checkpoints\phase4_baseline_100k_seed4242\phase4_baseline_100k_seed4242_latest_vecnormalize.pkl --episodes 20 --seed 6000 --device cpu --out-dir work\phase4_eval_baseline_100k --run-name phase4_eval_baseline_100k
+```
+
+評価出力:
+
+```text
+phase4_step_log.csv
+phase4_episode_summary.csv
+phase4_contact_timeline.svg
+phase4_summary.json
+```
+
+### E. 3D再生
+
+```powershell
+.\.venv_phase1\Scripts\python.exe play.py --agent model --model checkpoints\phase4_baseline_100k_seed4242\phase4_baseline_100k_seed4242_latest.zip --vec-normalize-stats checkpoints\phase4_baseline_100k_seed4242\phase4_baseline_100k_seed4242_latest_vecnormalize.pkl --render-mode human --episodes 1 --max-steps 1000 --seed 6000 --deterministic --device cpu --sleep 0.005
+```
+
+### F. TensorBoard確認
+
+```powershell
+.\.venv_phase1\Scripts\tensorboard.exe --logdir runs\tensorboard
+```
+
+ブラウザで表示:
+
+```text
+http://localhost:6006
+```
+
+### G. Ctrl+C中断と再開
+
+学習中にCtrl+Cを押すと、次のようなinterrupt checkpointを保存して終了します。
+
+```text
+<checkpoint-dir>\<run-name>_interrupt.zip
+<checkpoint-dir>\<run-name>_interrupt_vecnormalize.pkl
+<checkpoint-dir>\<run-name>_interrupt_metadata.json
+```
+
+再開例:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe train_phase4.py --preset baseline --total-timesteps 100000 --seed 4242 --n-envs 4 --device cpu --checkpoint-dir checkpoints\phase4_baseline_resume_after_interrupt --run-name phase4_baseline_resume_after_interrupt --resume checkpoints\phase4_baseline_100k_seed4242\phase4_baseline_100k_seed4242_interrupt.zip --vec-normalize-stats checkpoints\phase4_baseline_100k_seed4242\phase4_baseline_100k_seed4242_interrupt_vecnormalize.pkl --save-freq 25000 --torch-threads 10
+```
+
+### 短い動作確認
+
+実施した確認:
+
+```powershell
+.\.venv_phase1\Scripts\python.exe -m py_compile train_phase4.py evaluate_phase4.py
+.\.venv_phase1\Scripts\python.exe train_phase4.py --help
+.\.venv_phase1\Scripts\python.exe evaluate_phase4.py --help
+.\.venv_phase1\Scripts\python.exe tests\test_phase4_cli.py
+```
+
+結果:
+
+```text
+phase4_cli_tests_done=true
+```
+
+smoke test:
+
+| 条件 | step | 実測時間 | 速度 |
+| --- | ---: | ---: | ---: |
+| baseline, n_envs=1 | 1,024 | 2.422秒 | 422.751 steps/sec |
+| candidate, n_envs=1 | 1,024 | 2.644秒 | 387.248 steps/sec |
+| baseline resume | 1,024追加 | 2.014秒 | 508.350 steps/sec |
+
+保存・再開確認:
+
+- baseline smokeは`work\phase4_smoke_baseline`へモデル、VecNormalize統計、metadataを保存しました。
+- resume smokeは`model_start_num_timesteps=1024`から開始し、`trained_timesteps=2048`で終了しました。
+- resume時の`optimizer_state_entries=13`を確認し、PPO optimizer状態が保存モデルから読み込まれていることを確認しました。
+- 評価時は`VecNormalize.training=False`、`VecNormalize.norm_reward=False`で実行できました。
+- `play.py --render-mode none`でPhase 4保存モデルとVecNormalize統計の読み込みを確認しました。
+
+### n_envsベンチマーク
+
+`baseline`で約5,000stepの短い速度計測を行いました。PPO rollout単位により実step数は指定値より少し増える場合があります。
+
+| n_envs | VecEnv | 実step | 実測時間 | 速度 |
+| ---: | --- | ---: | ---: | ---: |
+| 1 | DummyVecEnv | 5,120 | 10.900秒 | 469.732 steps/sec |
+| 2 | SubprocVecEnv | 5,120 | 12.323秒 | 415.482 steps/sec |
+| 4 | SubprocVecEnv | 6,144 | 9.503秒 | 646.518 steps/sec |
+
+短い計測では`n_envs=4`が最速でした。ただし長時間学習ではCPU温度やメモリ、プロセス間通信の影響で速度が変わる可能性があります。発熱や操作の重さが出る場合は`n_envs=1`または`2`に下げてください。
+
+`n_envs=4`、646.518 steps/secを基準にした概算:
+
+| step | 推定時間 |
+| ---: | ---: |
+| 100,000 | 約2.6分 |
+| 300,000 | 約7.7分 |
+| 1,000,000 | 約25.8分 |
+
+未確認・注意:
+
+- 今回は100,000step以上の本格学習は実行していません。
+- 3Dウィンドウ表示はPhase 4では未実行です。モデル読み込みは`render-mode none`で確認済みです。
+- WindowsのCIM権限の都合でRAM容量の自動取得は失敗しました。長時間学習時はタスクマネージャーでCPU温度、使用率、メモリを確認してください。
+- Python 3.14環境では`Failed to find real location...`警告が出ますが、今回のテストでは処理は正常終了しました。
